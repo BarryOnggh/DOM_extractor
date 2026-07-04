@@ -1,0 +1,8 @@
+{
+  "goal": "I want to log in to check my CPF balance",
+  "current_url": "https://www.cpf.gov.sg",
+  "elements": [
+    {"id": "nav_01", "tag": "button", "text": "Login with Singpass"},
+    {"id": "nav_02", "tag": "input", "text": "", "placeholder": "Search services"}
+  ]
+}

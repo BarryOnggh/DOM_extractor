@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # 1. Define your variables and their expected types
-    openrouter_api_key: str
+    gemini_api_key: str
     debug_mode: bool = False
     port: int = 8000
 

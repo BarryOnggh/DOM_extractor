@@ -1,31 +1,23 @@
-import os
 import json
 from fastapi import FastAPI, HTTPException
 import instructor
-from openai import AsyncOpenAI
+from google import genai
 
-# Import your configurations and schemas from your local modules
+# Import your configurations and schemas
 from config import settings
 from schemas import NavigationRequest, NavigationResponse
 
 # Initialize FastAPI app
 app = FastAPI(
     title="AI Navigation Assistant API",
-    description="Backend processor utilizing LLMs via OpenRouter to compute next steps for web navigation workflows.",
+    description="Backend processor utilizing Gemini to compute next steps for web navigation workflows.",
     version="1.0.0"
 )
 
-# Initialize the OpenAI client wrapped with Instructor for strict Pydantic parsing.
-# Points directly to the OpenRouter orchestration layer, securely pulling the API key from your .env via pydantic-settings.
-client = instructor.from_openai(
-    AsyncOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=settings.openrouter_api_key, 
-        default_headers={
-            "HTTP-Referer": "http://localhost:8000",
-            "X-Title": "AI Navigation Assistant Portal",
-        }
-    )
+# Initialize the Gemini client wrapped with Instructor for strict Pydantic parsing.
+client = instructor.from_genai(
+    client=genai.Client(api_key=settings.gemini_api_key),
+    mode=instructor.Mode.JSON,
 )
 
 def build_system_prompt(elements: list) -> str:
@@ -33,7 +25,6 @@ def build_system_prompt(elements: list) -> str:
     Dynamically serializes the pruned DOM snapshot into a clean JSON manifest
     and injects it directly into the core structural ruleset for the LLM.
     """
-    # Exclude fields containing None to maximize context efficiency and token savings
     serialized_elements = json.dumps(
         [el.model_dump(exclude_none=True) for el in elements], 
         indent=2
@@ -54,8 +45,7 @@ RULES:
 """
 
 @app.post("/api/next-step", response_model=NavigationResponse)
-async def get_next_step(request: NavigationRequest):
-    # Extract structural constraints to monitor for hallucinated element selections
+def get_next_step(request: NavigationRequest):
     valid_ids = {el.id for el in request.elements}
     max_retries = 2
     
@@ -67,45 +57,44 @@ async def get_next_step(request: NavigationRequest):
 
     for attempt in range(max_retries + 1):
         try:
-            print(f"--- Attempt {attempt + 1}: Calling OpenRouter... ---")
-            # Execute completion utilizing high-capability, fast open-source reasoning models via OpenRouter
-            response = await client.chat.completions.create(
-                model="google/gemini-2.5-flash:free",
+            print(f"--- Attempt {attempt + 1}: Calling Gemini 2.5 Flash... ---")
+            
+            # Execute completion utilizing Gemini
+            response = client.chat.completions.create(
+                model="gemini-2.5-flash",
                 response_model=NavigationResponse,
                 messages=messages,
-                temperature=0.0  # Zero out randomness for deterministic interface interactions
+                temperature=0.0
             )
-
+            
             print("--- Success! Received response from LLM ---")
             
-            # Condition A: The LLM gracefully terminated or flagged an out-of-scope operation
+            # Condition A: Valid terminal state
             if response.action_type in ["done", "fail"]:
                 return response
                 
-            # Condition B: The element targeted exists within the real DOM tree array
+            # Condition B: Valid targeted element
             if response.element_id in valid_ids:
                 return response
                 
-            # Condition C: Element selection hallucination detected. Append trace and force correction loop.
+            # Condition C: Hallucination detected.
             error_msg = (
                 f"ERROR: You selected element_id '{response.element_id}', but that ID does not exist on this page. "
                 f"You must select an absolute match from this valid set: {list(valid_ids)}. Re-evaluate the DOM."
             )
             
-            # Feed the mistake and the correction back into the state array
             messages.append({"role": "assistant", "content": response.model_dump_json()})
             messages.append({"role": "user", "content": error_msg})
             
             print(f"[Warning] Element ID hallucination caught (Attempt {attempt + 1}). Re-routing request...")
 
         except Exception as e:
-            # Handle API connection timeouts or provider drops
             raise HTTPException(
                 status_code=500, 
-                detail=f"Downstream LLM orchestration failure: {str(e)}"
+                detail=f"Downstream LLM execution failure: {str(e)}"
             )
 
-    # Global Fallback: Triggered if the agent fails to align with the schema constraints within allowable loops
+    # Global Fallback
     return NavigationResponse(
         element_id=None,
         action_type="fail",
@@ -115,5 +104,4 @@ async def get_next_step(request: NavigationRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # Boot the server using the configuration parameters loaded from your .env file
     uvicorn.run("main:app", host="127.0.0.1", port=settings.port, reload=settings.debug_mode)

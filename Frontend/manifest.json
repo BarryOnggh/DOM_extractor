@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "GovAssist \u2014 AI Navigation Assistant",
+  "version": "0.1.0",
+  "description": "Walks you through government website tasks one step at a time.",
+  "permissions": ["sidePanel", "activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Open GovAssist"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

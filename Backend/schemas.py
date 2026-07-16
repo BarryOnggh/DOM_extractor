@@ -13,10 +13,17 @@ class DOMElement(BaseModel):
     placeholder: Optional[str] = None
     disabled: Optional[bool] = False
 
+class PreviousAction(BaseModel):
+    element_id: Optional[str] = None
+    action_type: str
+    explanation: str
+
 class NavigationRequest(BaseModel):
     goal: str
     current_url: str
     elements: List[DOMElement]
+    page_context: Optional[str] = None          # "modal" or "page"
+    previous_action: Optional[PreviousAction] = None  # what happened last step
 
 # --- Response Data (Force LLM to output) ---
 class NavigationResponse(BaseModel):

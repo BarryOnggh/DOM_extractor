@@ -1,5 +1,6 @@
 import json
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import instructor
 from google import genai
 
@@ -14,13 +15,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Allow the Chrome extension to call the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Initialize the Gemini client wrapped with Instructor for strict Pydantic parsing.
 client = instructor.from_genai(
     client=genai.Client(api_key=settings.gemini_api_key),
     mode=instructor.Mode.JSON,
 )
 
-def build_system_prompt(elements: list) -> str:
+def build_system_prompt(elements: list, page_context: str = "page") -> str:
     """
     Dynamically serializes the pruned DOM snapshot into a clean JSON manifest
     and injects it directly into the core structural ruleset for the LLM.
@@ -29,30 +39,47 @@ def build_system_prompt(elements: list) -> str:
         [el.model_dump(exclude_none=True) for el in elements], 
         indent=2
     )
-    
-    return f"""You are an AI navigation assistant for complex government portals (such as Singpass, IRAS, and health portals).
-Your task is to match the user's current GOAL to the single best interactive element on the screen.
 
-AVAILABLE ELEMENTS SNAPSHOT:
+    modal_note = ""
+    if page_context == "modal":
+        modal_note = "\nIMPORTANT: A dialog/modal window is currently open on screen. The elements below are ONLY from inside that modal. You MUST interact with one of these modal elements — do NOT reference anything outside."
+
+    return f"""You are an AI navigation assistant helping elderly or low-literacy users complete tasks on Singapore government websites (HDB, Singpass, CPF, etc.).
+Your task is to identify the single best NEXT interactive element the user should act on RIGHT NOW.{modal_note}
+
+AVAILABLE ELEMENTS ON SCREEN RIGHT NOW:
 {serialized_elements}
 
 RULES:
-1. STRICT ID MATCHING: You may ONLY output an element_id that explicitly exists in the AVAILABLE ELEMENTS SNAPSHOT list. 
-2. NO ASSUMPTIONS: If the user's goal cannot be clearly advanced or achieved by interacting with the current screen elements, you must set action_type to "fail" and explain why simply.
-3. EMPATHY & SIMPLICITY: Your "explanation" must be a single, short sentence written for low-literacy or elderly users. Avoid technical jargon entirely. (e.g., "I will click the 'Login with Singpass' button for you.")
-4. INPUT HANDLING: If the user needs to query or input data into a field, set action_type to "type" and provide the exact string inside "type_value".
-5. STEP-BY-STEP: Only plan the immediate NEXT step. Do not try to solve the entire workflow at once.
+1. STRICT ID MATCHING: You may ONLY output an element_id that explicitly appears in the list above. Never invent or guess an ID.
+2. CONTEXT AWARENESS: The elements above reflect exactly what is visible on screen right now. A modal may be open — work within it. Do NOT close a login/advisory modal to look for something behind it. Proceed through it.
+3. NO REPETITION: If a previous action is provided, do NOT repeat the exact same element_id and action_type unless the page has not changed.
+4. INTERMEDIATE STEPS (CRITICAL): If a login dialog pops up, or you see options for 'Residents', 'MyHDB Page', 'Singpass', or 'continue', you MUST select them to progress. Do not fail and do not close the modal, because logging in is a required step for all government services (like getting a housing grant).
+5. FAIL GRACEFULLY: If the user's goal cannot be advanced by any element in the list, set action_type to "fail" and explain briefly.
+6. EMPATHY & SIMPLICITY: Write the "explanation" as one short, plain sentence for an elderly user — no jargon. (e.g., "I will click the Login button for you.")
+7. INPUT HANDLING: If a text field needs to be filled, set action_type to "type" and put the exact value in "type_value".
+8. STEP-BY-STEP: Choose only the immediate next single step. Do not plan the whole workflow.
 """
 
 @app.post("/api/next-step", response_model=NavigationResponse)
 def get_next_step(request: NavigationRequest):
     valid_ids = {el.id for el in request.elements}
     max_retries = 2
-    
-    # Initialize the baseline conversational frame
+
+    # Build the user turn — include previous action context if available
+    user_content = f"Goal: {request.goal}"
+    if request.previous_action:
+        pa = request.previous_action
+        user_content += (
+            f"\n\nPREVIOUS STEP COMPLETED: I already performed action_type='{pa.action_type}'"
+            + (f" on element_id='{pa.element_id}'" if pa.element_id else "")
+            + f". Explanation given was: \"{pa.explanation}\"."
+            + "\nThe page may have changed as a result. Choose the NEXT step based on what is visible NOW."
+        )
+
     messages = [
-        {"role": "system", "content": build_system_prompt(request.elements)},
-        {"role": "user", "content": f"Goal: {request.goal}"}
+        {"role": "system", "content": build_system_prompt(request.elements, request.page_context or "page")},
+        {"role": "user", "content": user_content}
     ]
 
     for attempt in range(max_retries + 1):
@@ -89,9 +116,17 @@ def get_next_step(request: NavigationRequest):
             print(f"[Warning] Element ID hallucination caught (Attempt {attempt + 1}). Re-routing request...")
 
         except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "Quota exceeded" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                return NavigationResponse(
+                    element_id=None,
+                    action_type="fail",
+                    type_value=None,
+                    explanation="I am currently rate-limited by Google's servers. Please wait 45 seconds and try again!"
+                )
             raise HTTPException(
                 status_code=500, 
-                detail=f"Downstream LLM execution failure: {str(e)}"
+                detail=f"Downstream LLM execution failure: {error_str}"
             )
 
     # Global Fallback

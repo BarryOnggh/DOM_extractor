@@ -1,22 +1,24 @@
 /**
- * GovAssist — Extension UI Shell
+ * GovAssist — Extension UI Shell (v2 — Real Backend Integration)
  *
- * This file drives the sidebar UI against the MOCK backend in mock-data.js.
- * Everything below `callBackend()` is UI plumbing that won't need to change
- * when the real backend is wired in — only `callBackend()` itself gets
- * swapped from `fetchNextStep()` to a real `fetch()` call, as long as the
- * response shape matches the contract documented in mock-data.js.
+ * This file drives the sidebar UI against the REAL FastAPI + Gemini backend.
+ *
+ * Flow:
+ *   1. User types a goal
+ *   2. We ask the content script to scan the page DOM
+ *   3. We POST {goal, current_url, elements} to the backend
+ *   4. Backend returns {element_id, action_type, explanation, type_value}
+ *   5. We render a step card and tell the content script to highlight the element
+ *   6. User confirms → cycle repeats
  *
  * STATE PERSISTENCE: the conversation is mirrored to session storage (via
  * the sessionGet/sessionSet helpers below) as `chatState` on every change.
- * This is what lets the docked panel and the popped-out "full window" show
- * the exact same conversation — they are two separate page loads of this
- * same file, with no other link between them, so without this the full
- * window would always start blank.
  */
 
 (function () {
   "use strict";
+
+  const API_URL = "http://127.0.0.1:8000";
 
   // ---- DOM references ------------------------------------------------------
   const chatThread = document.getElementById("chatThread");
@@ -36,33 +38,123 @@
   const statusLabel = document.getElementById("statusLabel");
 
   // ---- Conversation state ---------------------------------------------------
-  // `conversation` = what the mock/real backend needs (flow + next step index).
-  // `chatLog` = every rendered entry, in order, so we can rebuild the thread
-  // exactly when a different window/panel loads this same page.
-  let conversation = { flowId: null, stepIndex: 0 };
+  let currentGoal = "";
+  let stepCount = 0;
+  let lastResponse = null; // the previous NavigationResponse, sent as context to the next step
   let chatLog = []; // [{kind:'user', text}] | [{kind:'note', text}] | [{kind:'step', step, resolved}]
   let currentStatus = "Ready to help";
   let currentTaskBanner = { visible: false, name: "—" };
 
   // ==========================================================================
-  // Backend boundary — swap this function's body once the real backend is
-  // ready, keep its shape.
+  // Backend + Content Script Communication
   // ==========================================================================
-  async function callBackend(goal) {
-    return fetchNextStep(goal, conversation);
-    // --- Real backend version will look roughly like: -----------------------
-    // const res = await fetch("https://api.govassist.example/next-step", {
-    //   method: "POST",
-    //   headers: { "Content-Type": "application/json" },
-    //   body: JSON.stringify({ goal, history: conversation, dom_elements: scannedElements }),
-    // });
-    // return res.json();
-    // -------------------------------------------------------------------------
+
+  /**
+   * Send a message to the content script in the active tab.
+   */
+  async function sendToContentScript(message) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error("No active tab found");
+    return chrome.tabs.sendMessage(tab.id, message);
+  }
+
+  /**
+   * Scan the active tab's DOM for interactive elements.
+   */
+  async function scanPageDOM() {
+    try {
+      const response = await sendToContentScript({ action: "scanDOM" });
+      if (response && response.success) {
+        return { elements: response.elements, url: response.url, context: response.context || "page" };
+      }
+    } catch (err) {
+      console.error("[GovAssist] DOM scan failed:", err);
+    }
+    return { elements: [], url: "", context: "page" };
+  }
+
+  /**
+   * Ask the content script to highlight an element.
+   */
+  async function highlightOnPage(elementId, actionType, explanation, typeValue) {
+    try {
+      await sendToContentScript({
+        action: "highlight",
+        element_id: elementId,
+        action_type: actionType,
+        explanation: explanation,
+        type_value: typeValue,
+      });
+    } catch (err) {
+      console.error("[GovAssist] Highlight failed:", err);
+    }
+  }
+
+  /**
+   * Clear any existing highlights on the page.
+   */
+  async function clearPageHighlight() {
+    try {
+      await sendToContentScript({ action: "clearHighlight" });
+    } catch (err) {
+      console.error("[GovAssist] Clear highlight failed:", err);
+    }
+  }
+
+  /**
+   * Call the real backend: scan DOM → POST to API → highlight result.
+   * Returns a normalized step object for the UI.
+   */
+  async function callBackend(goal, previousAction) {
+    // Step 1: Scan the DOM (modal-aware)
+    const { elements, url, context } = await scanPageDOM();
+
+    if (elements.length === 0) {
+      return {
+        action_type: "fail",
+        element_id: null,
+        explanation: "I can't read this page yet. Please make sure you're on a website and try again.",
+        type_value: null,
+      };
+    }
+
+    // Step 2: POST to the backend with full context
+    const body = {
+      goal: goal,
+      current_url: url,
+      elements: elements,
+      page_context: context,
+    };
+    if (previousAction) body.previous_action = previousAction;
+
+    const res = await fetch(`${API_URL}/api/next-step`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      console.error("[GovAssist] Backend error:", res.status, detail);
+      return {
+        action_type: "fail",
+        element_id: null,
+        explanation: "Something went wrong talking to the AI. Please try again in a moment.",
+        type_value: null,
+      };
+    }
+
+    const data = await res.json();
+
+    // Step 3: Highlight the target element on the page
+    if (data.element_id && data.action_type !== "done" && data.action_type !== "fail") {
+      await highlightOnPage(data.element_id, data.action_type, data.explanation, data.type_value);
+    }
+
+    return data;
   }
 
   // ---- Storage helpers -------------------------------------------------
-  // storage.session is standard in modern Chrome/Edge; fall back to
-  // storage.local just in case of an older browser version.
   async function sessionGet(keys) {
     try {
       if (chrome.storage.session) return await chrome.storage.session.get(keys);
@@ -85,7 +177,13 @@
   async function persistState() {
     try {
       await sessionSet({
-        chatState: { chatLog, conversation, status: currentStatus, taskBanner: currentTaskBanner }
+        chatState: {
+          chatLog,
+          currentGoal,
+          stepCount,
+          status: currentStatus,
+          taskBanner: currentTaskBanner,
+        },
       });
     } catch (error) {
       console.error("[GovAssist] couldn't persist chat state:", error);
@@ -154,25 +252,41 @@
     const wrap = document.createElement("div");
     wrap.className = "msg msg-assistant";
 
-    const progress =
-      step.total_steps != null
-        ? `Step ${step.step_index} of ${step.total_steps}`
-        : `Step ${step.step_index}`;
+    const stepNum = step.step_number || stepCount;
+    const isDone = step.action_type === "done";
+    const isFail = step.action_type === "fail";
 
+    // Choose icon based on action type
+    let actionIcon = "👆";
+    let actionLabel = "Click the element";
+    if (step.action_type === "type") {
+      actionIcon = "⌨️";
+      actionLabel = "Type in the field";
+    } else if (step.action_type === "done") {
+      actionIcon = "✅";
+      actionLabel = "Task complete";
+    } else if (step.action_type === "fail") {
+      actionIcon = "⚠️";
+      actionLabel = "Couldn't proceed";
+    }
+
+    // Build the step card
     wrap.innerHTML = `
       <div class="assistant-label"><span class="assistant-avatar">AI</span> Assistant</div>
-      <div class="step-card ${resolved ? "is-done" : ""}" data-step-index="${step.step_index}">
-        <div class="step-number">${step.step_index}</div>
+      <div class="step-card ${resolved || isDone ? "is-done" : ""} ${isFail ? "is-fail" : ""}">
+        <div class="step-number">${isFail ? "!" : stepNum}</div>
         <div class="step-body">
-          <div class="step-title">${escapeHtml(step.instruction)}</div>
+          <div class="step-title">${actionIcon} ${escapeHtml(actionLabel)}</div>
           <div class="step-detail">${escapeHtml(step.explanation)}</div>
-          <div class="step-progress">${progress}</div>
+          ${step.element_id ? `<div class="step-target">Target: <code>${escapeHtml(step.element_id)}</code></div>` : ""}
+          ${step.type_value ? `<div class="step-target">Value: <code>${escapeHtml(step.type_value)}</code></div>` : ""}
+          <div class="step-progress">Step ${stepNum}</div>
           <div class="step-actions">
             ${
-              resolved
+              resolved || isDone || isFail
                 ? ""
                 : `<button type="button" class="pill-btn primary" data-action="confirm">
-                     ${step.done ? "Mark complete" : "I did this — next step"}
+                     I did this — next step
                    </button>`
             }
             <button type="button" class="pill-btn" data-action="read-aloud">🔊 Read aloud</button>
@@ -192,7 +306,7 @@
       });
     }
     card.querySelector('[data-action="read-aloud"]').addEventListener("click", () => {
-      readAloud(`${step.instruction}. ${step.explanation}`);
+      readAloud(step.explanation);
     });
   }
 
@@ -206,14 +320,18 @@
       renderStepCard(entry.step, entry.resolved, () => {
         entry.resolved = true;
         persistState();
-        if (entry.step.done) {
+        if (entry.step.action_type === "done") {
           pushEntry({ kind: "note", text: "Nicely done — that completes this task! 🎉" });
           setStatus("Ready to help");
           setTaskBanner(false, "—");
-          conversation = { flowId: null, stepIndex: 0 };
+          currentGoal = "";
+          stepCount = 0;
           persistState();
+        } else if (entry.step.action_type === "fail") {
+          pushEntry({ kind: "note", text: "Let's try a different approach. Type your goal again or rephrase it." });
+          setStatus("Ready to help");
         } else {
-          requestNextStep();
+          requestNextStep(null, entry.step); // pass the completed step as previousAction
         }
       });
     }
@@ -227,8 +345,12 @@
   }
 
   // ---- Core flow -------------------------------------------------------
-  async function requestNextStep(goalForFirstCall) {
+  async function requestNextStep(goalForFirstCall, previousActionOverride) {
     setStatus("Thinking…");
+
+    // Clear previous highlights
+    await clearPageHighlight();
+
     const typingWrap = document.createElement("div");
     typingWrap.className = "msg msg-assistant";
     typingWrap.id = "typingIndicator";
@@ -240,31 +362,85 @@
     scrollToBottom();
     sendBtn.disabled = true;
 
-    const step = await callBackend(goalForFirstCall || "");
+    try {
+      const goal = goalForFirstCall || currentGoal;
+      // previousActionOverride = step passed directly from the confirm button
+      // lastResponse = stored from the previous API response
+      const rawPrev = previousActionOverride || lastResponse;
+      const previousAction = rawPrev
+        ? { element_id: rawPrev.element_id, action_type: rawPrev.action_type, explanation: rawPrev.explanation }
+        : null;
+      const response = await callBackend(goal, previousAction);
 
-    document.getElementById("typingIndicator")?.remove();
-    sendBtn.disabled = false;
+      document.getElementById("typingIndicator")?.remove();
+      sendBtn.disabled = false;
 
-    if (!step) {
+      if (!response) {
+        pushEntry({
+          kind: "note",
+          text: "I couldn't figure out what to do on this page. Try describing your goal differently.",
+        });
+        setStatus("Ready to help");
+        return;
+      }
+
+      stepCount++;
+
+      // Handle terminal states
+      if (response.action_type === "done") {
+        pushEntry({
+          kind: "step",
+          step: { ...response, step_number: stepCount },
+          resolved: true,
+        });
+        pushEntry({ kind: "note", text: "All done! Your task is complete. 🎉" });
+        setStatus("Ready to help");
+        setTaskBanner(false, "—");
+        currentGoal = "";
+        stepCount = 0;
+        persistState();
+        return;
+      }
+
+      if (response.action_type === "fail") {
+        pushEntry({
+          kind: "step",
+          step: { ...response, step_number: stepCount },
+          resolved: true,
+        });
+        setStatus("Ready to help");
+        stepCount--;
+        return;
+      }
+
+      // Normal action step — store response so next cycle knows what happened
+      lastResponse = response;
+      pushEntry({
+        kind: "step",
+        step: { ...response, step_number: stepCount },
+        resolved: false,
+      });
+      setStatus("Waiting on you");
+    } catch (err) {
+      document.getElementById("typingIndicator")?.remove();
+      sendBtn.disabled = false;
+      console.error("[GovAssist] requestNextStep error:", err);
+
       pushEntry({
         kind: "note",
-        text: "I couldn't find a matching task for that yet. Try \u201cApply for housing grant\u201d or \u201cCheck CPF balance.\u201d"
+        text: "Something went wrong. Is the backend running at " + API_URL + "? Error: " + err.message,
       });
-      setStatus("Ready to help");
-      return;
+      setStatus("Error — check backend");
     }
-
-    conversation.flowId = step.flowId;
-    conversation.stepIndex = step.step_index; // next step to request
-    persistState();
-
-    if (step.step_index === 1) setTaskBanner(true, step.task_name);
-    pushEntry({ kind: "step", step, resolved: false });
-    setStatus(step.done ? "Ready to help" : "Waiting on you");
   }
 
   function startNewGoal(goalText) {
-    conversation = { flowId: null, stepIndex: 0 };
+    currentGoal = goalText;
+    stepCount = 0;
+    lastResponse = null; // reset context for a fresh goal
+    if (!currentTaskBanner.visible) {
+      setTaskBanner(true, goalText);
+    }
     pushEntry({ kind: "user", text: goalText });
     requestNextStep(goalText);
   }
@@ -338,7 +514,7 @@
     recognizer.start();
   });
 
-  // ---- Attach button (placeholder only, same pattern as language toggle) --
+  // ---- Attach button (placeholder only) --
   attachBtn.addEventListener("click", () => {
     composerHint.textContent = "Attachments are a placeholder — not wired up yet";
     setTimeout(() => {
@@ -409,7 +585,8 @@
     const saved = await loadPersistedState();
     if (saved && Array.isArray(saved.chatLog) && saved.chatLog.length > 0) {
       chatLog = saved.chatLog;
-      conversation = saved.conversation || { flowId: null, stepIndex: 0 };
+      currentGoal = saved.currentGoal || "";
+      stepCount = saved.stepCount || 0;
       currentStatus = saved.status || "Ready to help";
       currentTaskBanner = saved.taskBanner || { visible: false, name: "—" };
 

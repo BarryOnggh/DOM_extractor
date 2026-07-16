@@ -1,0 +1,400 @@
+/**
+ * GovAssist — Content Script (v3)
+ *
+ * Key improvements over v2:
+ *  - Computes a unique CSS selector path per element at scan time and caches it
+ *  - Highlight resolves elements via the cached path first (survives SPA re-renders)
+ *  - Includes parent section heading in element context so LLM can distinguish
+ *    e.g. "Apply for HFE (e-services card)" vs "HFE application (article card)"
+ *  - Highlight re-scans the DOM to refresh cache before drawing the overlay
+ *  - Fixed-position overlay with proper scroll-settle wait
+ */
+
+(function () {
+  "use strict";
+
+  const GA_ID_ATTR = "data-ga-id";
+  const HIGHLIGHT_CLASS = "govassist-highlight-overlay";
+  const TOOLTIP_CLASS  = "govassist-tooltip";
+
+  // Persistent across calls — never reset
+  let idCounter = 0;
+
+  // Cache: ga-id → { selectorPath, elementText, tag }
+  // Survives between scanDOM and highlight calls even if DOM re-renders
+  const selectorCache = {};
+
+  // =====================================================================
+  // 1. SELECTOR PATH
+  // =====================================================================
+
+  /**
+   * Build a unique CSS selector path for an element that works even after
+   * a SPA re-render (uses tag + nth-of-type chain, avoids generated classes).
+   */
+  function computeSelectorPath(el) {
+    const parts = [];
+    let node = el;
+    while (node && node !== document.body) {
+      let part = node.tagName.toLowerCase();
+      if (node.id && /^[a-zA-Z][\w-]*$/.test(node.id)) {
+        // Stable real id — this anchors the selector
+        parts.unshift(`#${node.id}`);
+        return parts.join(" > ");
+      }
+      const siblings = node.parentElement
+        ? Array.from(node.parentElement.children).filter(c => c.tagName === node.tagName)
+        : [];
+      if (siblings.length > 1) {
+        const idx = siblings.indexOf(node) + 1;
+        part += `:nth-of-type(${idx})`;
+      }
+      parts.unshift(part);
+      node = node.parentElement;
+    }
+    return parts.join(" > ");
+  }
+
+  /**
+   * Find the nearest ancestor's text heading to give element context.
+   * e.g. "Recommended e-Services", "Recommended topics"
+   */
+  function getSectionContext(el) {
+    let node = el.parentElement;
+    for (let i = 0; i < 8 && node && node !== document.body; i++) {
+      const heading = node.querySelector("h1,h2,h3,h4");
+      if (heading) {
+        const t = heading.innerText.trim();
+        if (t) return t;
+      }
+      node = node.parentElement;
+    }
+    return "";
+  }
+
+  // =====================================================================
+  // 2. DOM SCANNER
+  // =====================================================================
+
+  const INTERACTIVE_SELECTOR = [
+    "a[href]",
+    "button",
+    "input:not([type='hidden'])",
+    "select",
+    "textarea",
+    "[role='button']",
+    "[role='link']",
+    "[role='tab']",
+    "[role='menuitem']",
+    "[role='option']",
+  ].join(", ");
+
+  function isVisible(el) {
+    if (el.offsetWidth === 0 && el.offsetHeight === 0) return false;
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (parseFloat(style.opacity) === 0) return false;
+    return true;
+  }
+
+  function isInert(el) {
+    let node = el;
+    while (node && node !== document.body) {
+      if (node.hasAttribute("inert")) return true;
+      if (node.getAttribute("aria-hidden") === "true") return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function getOpenModal() {
+    const dialogs = Array.from(document.querySelectorAll("dialog[open]")).filter(isVisible);
+    if (dialogs.length) return dialogs[dialogs.length - 1];
+    const roleModals = Array.from(
+      document.querySelectorAll("[role='dialog'][aria-modal='true'],[role='alertdialog']")
+    ).filter(isVisible);
+    if (roleModals.length) return roleModals[roleModals.length - 1];
+    const ariaModals = Array.from(document.querySelectorAll("[aria-modal='true']")).filter(isVisible);
+    if (ariaModals.length) return ariaModals[ariaModals.length - 1];
+    return null;
+  }
+
+  function getElementText(el) {
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+      return el.placeholder || el.getAttribute("aria-label") || el.getAttribute("name") || "";
+    }
+    if (el.tagName === "SELECT") {
+      const sel = el.options[el.selectedIndex];
+      return sel ? sel.text : el.getAttribute("aria-label") || "";
+    }
+    return (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").substring(0, 120);
+  }
+
+  function ensureId(el) {
+    // Use real stable id if available
+    if (el.id && /^[a-zA-Z][\w-]*$/.test(el.id)) return el.id;
+    if (el.getAttribute(GA_ID_ATTR)) return el.getAttribute(GA_ID_ATTR);
+    idCounter++;
+    const gaId = `ga-${el.tagName.toLowerCase()}-${idCounter}`;
+    el.setAttribute(GA_ID_ATTR, gaId);
+    return gaId;
+  }
+
+  function scanDOM() {
+    const modal = getOpenModal();
+    const root = modal || document;
+    const context = modal ? "modal" : "page";
+    const elements = [];
+    const seen = new Set();
+
+    root.querySelectorAll(INTERACTIVE_SELECTOR).forEach((el) => {
+      if (!isVisible(el)) return;
+      if (el.disabled) return;
+      if (isInert(el)) return;
+
+      const text = getElementText(el);
+      const ariaLabel = el.getAttribute("aria-label") || "";
+      const title = el.getAttribute("title") || "";
+      const displayText = text || ariaLabel || title;
+      if (!displayText) return;
+
+      const id = ensureId(el);
+      if (seen.has(id)) return;
+      seen.add(id);
+
+      // Compute and cache selector path NOW while we have the element reference
+      const path = computeSelectorPath(el);
+      const section = getSectionContext(el);
+      selectorCache[id] = { path, text: displayText, tag: el.tagName.toLowerCase() };
+
+      const entry = {
+        id,
+        tag: el.tagName.toLowerCase(),
+        text: section ? `[${section}] ${displayText}` : displayText,
+      };
+      if (el.type) entry.type = el.type;
+      if (el.placeholder) entry.placeholder = el.placeholder;
+
+      elements.push(entry);
+    });
+
+    const trimmed = elements.slice(0, 60);
+    console.log(`[GovAssist] Scanned ${trimmed.length} elements (context: ${context})`);
+    return { elements: trimmed, context };
+  }
+
+  // =====================================================================
+  // 3. ELEMENT RESOLVER  (used at highlight time)
+  // =====================================================================
+
+  /**
+   * Find a live DOM element using multiple strategies, most reliable first.
+   */
+  function resolveElement(elementId) {
+    // Strategy 1: cached CSS selector path (survives SPA re-renders)
+    const cached = selectorCache[elementId];
+    if (cached) {
+      try {
+        const el = document.querySelector(cached.path);
+        if (el && isVisible(el)) {
+          console.log(`[GovAssist] Resolved "${elementId}" via cached path: ${cached.path}`);
+          return el;
+        }
+      } catch (e) { /* invalid selector — fall through */ }
+    }
+
+    // Strategy 2: real DOM id
+    const byId = document.getElementById(elementId);
+    if (byId && isVisible(byId)) {
+      console.log(`[GovAssist] Resolved "${elementId}" via getElementById`);
+      return byId;
+    }
+
+    // Strategy 3: data-ga-id attribute
+    const byAttr = document.querySelector(`[${GA_ID_ATTR}="${elementId}"]`);
+    if (byAttr && isVisible(byAttr)) {
+      console.log(`[GovAssist] Resolved "${elementId}" via data-ga-id`);
+      return byAttr;
+    }
+
+    // Strategy 4: text-content fuzzy match using cached text
+    if (cached && cached.text) {
+      const needle = cached.text.replace(/^\[.*?\]\s*/, "").toLowerCase().trim();
+      const candidates = document.querySelectorAll(INTERACTIVE_SELECTOR);
+      for (const el of candidates) {
+        const t = getElementText(el).toLowerCase().trim();
+        if (t && (t === needle || t.includes(needle) || needle.includes(t)) && isVisible(el)) {
+          console.log(`[GovAssist] Resolved "${elementId}" via text fuzzy match: "${t}"`);
+          return el;
+        }
+      }
+    }
+
+    console.warn(`[GovAssist] Could not resolve element "${elementId}"`);
+    return null;
+  }
+
+  // =====================================================================
+  // 4. HIGHLIGHTER
+  // =====================================================================
+
+  function injectStyles() {
+    if (document.getElementById("govassist-highlight-styles")) return;
+    const style = document.createElement("style");
+    style.id = "govassist-highlight-styles";
+    style.textContent = `
+      @keyframes govassist-pulse {
+        0%   { box-shadow: 0 0 0 0 rgba(47,111,237,0.65); }
+        70%  { box-shadow: 0 0 0 18px rgba(47,111,237,0); }
+        100% { box-shadow: 0 0 0 0 rgba(47,111,237,0); }
+      }
+      @keyframes govassist-bounce {
+        0%,100% { transform: translateX(-50%) translateY(0); }
+        50%     { transform: translateX(-50%) translateY(-5px); }
+      }
+      .${HIGHLIGHT_CLASS} {
+        position: fixed;
+        border: 3px solid #2F6FED;
+        border-radius: 8px;
+        pointer-events: none;
+        z-index: 2147483646;
+        animation: govassist-pulse 1.6s infinite;
+        background: rgba(47,111,237,0.07);
+        box-sizing: border-box;
+        transition: top 0.15s, left 0.15s, width 0.15s, height 0.15s;
+      }
+      .${TOOLTIP_CLASS} {
+        position: fixed;
+        z-index: 2147483647;
+        background: #2F6FED;
+        color: #fff;
+        font-family: -apple-system,"Segoe UI",Roboto,sans-serif;
+        font-size: 14px;
+        font-weight: 700;
+        padding: 6px 14px;
+        border-radius: 10px;
+        white-space: nowrap;
+        pointer-events: none;
+        box-shadow: 0 4px 20px rgba(47,111,237,0.4);
+        animation: govassist-bounce 1.2s ease-in-out infinite;
+        transform: translateX(-50%);
+      }
+      .${TOOLTIP_CLASS}::after {
+        content: '';
+        position: absolute;
+        bottom: -7px;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 8px solid transparent;
+        border-top-color: #2F6FED;
+        border-bottom: none;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function clearHighlight() {
+    document.querySelectorAll(`.${HIGHLIGHT_CLASS},.${TOOLTIP_CLASS}`).forEach(e => e.remove());
+  }
+
+  function drawOverlay(el, actionType) {
+    const PAD = 5;
+    const container = getOpenModal() || document.body;
+
+    const overlay = document.createElement("div");
+    overlay.className = HIGHLIGHT_CLASS;
+    container.appendChild(overlay);
+
+    const tooltip = document.createElement("div");
+    tooltip.className = TOOLTIP_CLASS;
+    tooltip.textContent =
+      actionType === "type"  ? "⌨️ Type here"  :
+      actionType === "click" ? "👆 Click here"  : "👀 Look here";
+    container.appendChild(tooltip);
+
+    // Continuous update loop to stick to the element during scroll
+    function updatePosition() {
+      // If the overlay was removed by clearHighlight, stop the loop
+      if (!overlay.isConnected) return;
+
+      const rect = el.getBoundingClientRect();
+      
+      // Hide if element is out of bounds or invisible
+      if (rect.width === 0 || rect.height === 0 || rect.bottom < 0 || rect.top > window.innerHeight) {
+        overlay.style.display = 'none';
+        tooltip.style.display = 'none';
+      } else {
+        overlay.style.display = 'block';
+        tooltip.style.display = 'block';
+        
+        overlay.style.top    = (rect.top  - PAD) + "px";
+        overlay.style.left   = (rect.left - PAD) + "px";
+        overlay.style.width  = (rect.width  + PAD * 2) + "px";
+        overlay.style.height = (rect.height + PAD * 2) + "px";
+
+        const tipTop = Math.max(rect.top - PAD - 44, 8);
+        const tipLeft = rect.left + rect.width / 2;
+        tooltip.style.top  = tipTop + "px";
+        tooltip.style.left = tipLeft + "px";
+      }
+      
+      requestAnimationFrame(updatePosition);
+    }
+    
+    updatePosition();
+  }
+
+  async function highlightElement(elementId, actionType, typeValue) {
+    clearHighlight();
+    injectStyles();
+
+    // Refresh the selector cache with a fresh scan before resolving
+    scanDOM();
+
+    const el = resolveElement(elementId);
+    if (!el) return false;
+
+    // Scroll into view, then wait for animation to settle
+    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+
+    await new Promise(r => setTimeout(r, 600));
+
+    // If element moved off screen during scroll, re-check
+    drawOverlay(el, actionType);
+
+    // For type actions, focus and pre-fill
+    if (actionType === "type" && typeValue) {
+      el.focus();
+      el.value = typeValue;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    return true;
+  }
+
+  // =====================================================================
+  // 5. MESSAGE LISTENER
+  // =====================================================================
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === "scanDOM") {
+      const { elements, context } = scanDOM();
+      sendResponse({ success: true, elements, context, url: window.location.href });
+      return false;
+    }
+
+    if (message.action === "highlight") {
+      highlightElement(message.element_id, message.action_type, message.type_value)
+        .then(ok => sendResponse({ success: ok }));
+      return true; // async response
+    }
+
+    if (message.action === "clearHighlight") {
+      clearHighlight();
+      sendResponse({ success: true });
+      return false;
+    }
+  });
+
+  console.log("[GovAssist] Content script v3 loaded on", window.location.href);
+})();

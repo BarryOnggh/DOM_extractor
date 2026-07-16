@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Housing information, services, and resources from the Housing &amp; Development Board.">
+  <meta name="theme-color" content="#085054">
+  <title>Housing &amp; Development Board (HDB)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#app">Skip to main content</a>
+
+  <header class="site-header" id="site-header">
+    <section class="advisory-bar" id="advisory-bar" aria-label="Important advisory">
+      <div class="shell advisory-inner">
+        <span class="advisory-icon" aria-hidden="true">!</span>
+        <div class="advisory-copy">
+          <strong>Important Advisory</strong>
+          <span id="advisory-text">HDB will never request money transfers or bank log-in details from you over the phone.</span>
+          <button class="link-button" id="advisory-more" type="button">See more</button>
+        </div>
+        <div class="advisory-controls" aria-label="Advisory pages">
+          <button class="icon-button small" id="advisory-prev" type="button" aria-label="Previous advisory">‹</button>
+          <span id="advisory-count" aria-live="polite">1 of 3</span>
+          <button class="icon-button small" id="advisory-next" type="button" aria-label="Next advisory">›</button>
+        </div>
+        <button class="icon-button" id="advisory-close" type="button" aria-label="Close advisory">×</button>
+      </div>
+    </section>
+
+    <section class="gov-masthead">
+      <div class="shell gov-masthead-inner">
+        <span class="crest" aria-hidden="true">●</span>
+        <span>A Singapore Government Agency Website</span>
+        <button class="masthead-toggle" id="masthead-toggle" type="button" aria-expanded="false" aria-controls="masthead-details">
+          How to identify <span aria-hidden="true">⌄</span>
+        </button>
+      </div>
+      <div class="masthead-details" id="masthead-details" hidden>
+        <div class="shell masthead-grid">
+          <div>
+            <span class="detail-icon" aria-hidden="true">🏛</span>
+            <p><strong>Official website links end with .gov.sg</strong></p>
+            <p>Government agencies communicate via official websites.</p>
+          </div>
+          <div>
+            <span class="detail-icon" aria-hidden="true">🔒</span>
+            <p><strong>Secure websites use HTTPS</strong></p>
+            <p>Look for a lock or <code>https://</code> before sharing sensitive information.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="utility-nav" aria-label="Utility navigation">
+      <div class="shell utility-inner">
+        <a class="brand route-link" href="#/homepage" aria-label="HDB home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="brand-words"><strong>Housing &amp;</strong><small>Development Board</small></span>
+        </a>
+        <div class="utility-actions">
+          <a class="utility-link route-link desktop-only" href="#/about-us">About Us</a>
+          <a class="utility-link route-link desktop-only" href="#/hdb-pulse">HDB Pulse</a>
+          <button class="icon-button desktop-only" id="messages-button" type="button" aria-label="View advisory messages">♢</button>
+          <button class="icon-button desktop-only" id="search-toggle" type="button" aria-label="Toggle search bar" aria-expanded="false">⌕</button>
+          <button class="login-button" id="login-button" type="button"><span aria-hidden="true">▣</span> Login</button>
+          <button class="menu-button mobile-only" id="menu-button" type="button" aria-expanded="false" aria-controls="mobile-menu"><span></span><span></span><span></span><b>Menu</b></button>
+        </div>
+      </div>
+    </nav>
+
+    <div class="search-panel" id="search-panel" hidden>
+      <form class="shell search-form" id="site-search" role="search">
+        <label for="search-input">Search HDB information</label>
+        <div class="search-row">
+          <input id="search-input" type="search" autocomplete="off" placeholder="Search our website">
+          <button class="primary-button" type="submit">Search</button>
+          <button class="icon-button" id="search-close" type="button" aria-label="Close search">×</button>
+        </div>
+        <div class="search-results" id="search-results" aria-live="polite"></div>
+      </form>
+    </div>
+
+    <nav class="primary-nav" aria-label="Main navigation">
+      <div class="shell primary-inner">
+        <a class="brand-spacer route-link" href="#/homepage" aria-hidden="true" tabindex="-1"></a>
+        <ul id="primary-links"></ul>
+      </div>
+      <div class="mega-menu" id="mega-menu" hidden></div>
+    </nav>
+  </header>
+
+  <aside class="mobile-menu" id="mobile-menu" aria-label="Mobile navigation" aria-hidden="true">
+    <div class="mobile-menu-head">
+      <strong>Menu</strong>
+      <button class="icon-button" id="mobile-menu-close" type="button" aria-label="Close menu">×</button>
+    </div>
+    <button class="mobile-search-trigger" id="mobile-search-trigger" type="button">⌕ Search</button>
+    <nav id="mobile-nav" aria-label="Mobile main navigation"></nav>
+  </aside>
+  <div class="page-scrim" id="page-scrim" hidden></div>
+
+  <main id="app" tabindex="-1"></main>
+
+  <footer class="site-footer">
+    <div class="shell footer-top">
+      <a class="footer-brand route-link" href="#/homepage">
+        <span class="brand-mark inverse" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>Housing &amp; Development Board</strong><small>Creating homes, building communities</small></span>
+      </a>
+      <nav class="footer-actions" aria-label="Contact links">
+        <a class="route-link" href="#/about-us/contact-us">Contact Us</a>
+        <a class="route-link" href="#/write-to-us">Write to Us</a>
+      </nav>
+      <nav class="social-links" aria-label="Social media links">
+        <a href="https://www.facebook.com/SingaporeHDB" target="_blank" rel="noreferrer" aria-label="Facebook">f</a>
+        <a href="https://www.instagram.com/SingaporeHDB" target="_blank" rel="noreferrer" aria-label="Instagram">◎</a>
+        <a href="https://www.linkedin.com/company/singaporehdb" target="_blank" rel="noreferrer" aria-label="LinkedIn">in</a>
+        <a href="https://www.youtube.com/user/singaporeHDB" target="_blank" rel="noreferrer" aria-label="YouTube">▶</a>
+      </nav>
+    </div>
+    <div class="shell footer-divider"></div>
+    <div class="shell footer-bottom">
+      <nav aria-label="Policy links">
+        <a href="https://www.tech.gov.sg/report-vulnerability" target="_blank" rel="noreferrer">Report Vulnerability ↗</a>
+        <a class="route-link" href="#/privacy-statement">Privacy Statement</a>
+        <a class="route-link" href="#/terms-of-use">Terms of Use</a>
+        <a class="route-link" href="#/sitemap">Sitemap</a>
+        <a class="route-link" href="#/site-requirements">Site Requirements</a>
+        <a class="route-link" href="#/useful-links">Useful Links</a>
+      </nav>
+      <p>© 2026 Government of Singapore.<br><span>Last updated 24 March 2026</span></p>
+    </div>
+  </footer>
+
+  <dialog class="site-dialog" id="login-dialog">
+    <button class="dialog-close icon-button" type="button" data-close-dialog aria-label="Close login dialog">×</button>
+    <span class="dialog-kicker">Secure services</span>
+    <h2>Login to HDB services</h2>
+    <p>Access personalised housing information and online services through the relevant HDB portal.</p>
+    <div class="login-options">
+      <a href="https://www.hdb.gov.sg/myhdb-page/" target="_blank" rel="noreferrer"><strong>Residents</strong><span>MyHDB Page ↗</span></a>
+      <a href="https://business.hdb.gov.sg/" target="_blank" rel="noreferrer"><strong>Business partners</strong><span>Business portal ↗</span></a>
+    </div>
+  </dialog>
+
+  <dialog class="site-dialog advisory-dialog" id="advisory-dialog">
+    <button class="dialog-close icon-button" type="button" data-close-dialog aria-label="Close advisory dialog">×</button>
+    <span class="dialog-kicker">Stay alert</span>
+    <h2>Important advisory messages</h2>
+    <div id="advisory-dialog-content"></div>
+  </dialog>
+
+  <button class="back-to-top" id="back-to-top" type="button" aria-label="Back to top">↑</button>
+  <div class="route-status" id="route-status" aria-live="polite"></div>
+
+  <script src="script.js" defer></script>
+</body>
+</html>

@@ -1,8 +1,7 @@
 import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import instructor
-from google import genai
+from openai import OpenAI
 
 # Import your configurations and schemas
 from config import settings
@@ -11,7 +10,7 @@ from schemas import NavigationRequest, NavigationResponse
 # Initialize FastAPI app
 app = FastAPI(
     title="AI Navigation Assistant API",
-    description="Backend processor utilizing Gemini to compute next steps for web navigation workflows.",
+    description="Backend processor utilizing Perplexity to compute next steps for web navigation workflows.",
     version="1.0.0"
 )
 
@@ -24,10 +23,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize the Gemini client wrapped with Instructor for strict Pydantic parsing.
-client = instructor.from_genai(
-    client=genai.Client(api_key=settings.gemini_api_key),
-    mode=instructor.Mode.JSON,
+# Initialize the Perplexity client (OpenAI-compatible)
+client = OpenAI(
+    api_key=settings.perplexity_api_key,
+    base_url="https://api.perplexity.ai",
 )
 
 def build_system_prompt(elements: list, page_context: str = "page") -> str:
@@ -52,23 +51,57 @@ AVAILABLE ELEMENTS ON SCREEN RIGHT NOW:
 
 RULES:
 1. STRICT ID MATCHING: You may ONLY output an element_id that explicitly appears in the list above. Never invent or guess an ID.
-2. CONTEXT AWARENESS: The elements above reflect exactly what is visible on screen right now. A modal may be open — work within it. Do NOT close a login/advisory modal to look for something behind it. Proceed through it.
-3. NO REPETITION: If a previous action is provided, do NOT repeat the exact same element_id and action_type unless the page has not changed.
-4. INTERMEDIATE STEPS (CRITICAL): If a login dialog pops up, or you see options for 'Residents', 'MyHDB Page', 'Singpass', or 'continue', you MUST select them to progress. Do not fail and do not close the modal, because logging in is a required step for all government services (like getting a housing grant).
-5. FAIL GRACEFULLY: If the user's goal cannot be advanced by any element in the list, set action_type to "fail" and explain briefly.
-6. EMPATHY & SIMPLICITY: Write the "explanation" as one short, plain sentence for an elderly user — no jargon. (e.g., "I will click the Login button for you.")
-7. INPUT HANDLING: If a text field needs to be filled, set action_type to "type" and put the exact value in "type_value".
-8. STEP-BY-STEP: Choose only the immediate next single step. Do not plan the whole workflow.
-"""
+
+2. ELEMENT TYPES: Each element is labelled [BUTTON], [LINK], [INPUT], or [CLOSE BUTTON]. When choosing between two elements with similar text, ALWAYS prefer the [BUTTON] over the [LINK]. A [CLOSE BUTTON] should only be chosen if the current modal/dialog was opened by mistake — otherwise proceed through it.
+
+3. MODAL BEHAVIOUR: If a login dialog/modal is open, interact with the primary [BUTTON] or [LINK] action inside it (e.g. "[BUTTON] Residents MyHDB Page", "[LINK] Log in with Singpass"). Do not close the modal unless you are truly stuck.
+
+4. LOGIN PAGE BEHAVIOUR: If you see "[BUTTON] Log in with Singpass" in the list, that is always the correct choice on a login page — not any [LINK] in the footer or help text.
+
+5. SINGPASS APP / QR LOGIN: If you are on a Singpass login page and see the "[QR SCANNER]" element, ALWAYS instruct the user to use the Singpass App / QR code login (which is the default). Set action_type to "click" and target the QR scanner element with explanation "Please use your Singpass mobile app to scan the QR code on the screen to log in." DO NOT choose the password login or password tab.
+
+6. NO REPETITION: Never repeat an element_id that appears in the COMPLETED STEPS history.
+
+7. INTERMEDIATE STEPS (CRITICAL): Logging in, clicking "Residents", "MyHDB Page", "Singpass", or "continue" are all valid intermediate steps toward any government service goal. Always proceed through them.
+
+8. FAIL GRACEFULLY: Only set action_type to "fail" if NO element in the list can advance the goal at all (or for the Singpass QR rule above).
+
+9. EMPATHY & SIMPLICITY: Write the "explanation" as one short, plain sentence for an elderly user — no jargon. (e.g., "I will click the Login button for you.")
+
+10. FILL FORMS FIRST: If there are empty text inputs on the page (like NRIC, Name, Phone), you MUST fill them out using action_type "type" and type_value BEFORE clicking "Next" or "Submit". Do not skip empty fields!
+
+11. INPUT HANDLING: If a text field needs to be filled, set action_type to "type" and put the exact value in "type_value".
+
+12. STEP-BY-STEP: Choose only the immediate next single step.
+
+You MUST respond with ONLY valid JSON matching this exact schema — no extra text, no markdown, no code fences:
+{{
+  "element_id": "<string or null>",
+  "action_type": "<click|type|scroll|done|fail>",
+  "type_value": "<string or null>",
+  "explanation": "<string>"
+}}"""
 
 @app.post("/api/next-step", response_model=NavigationResponse)
 def get_next_step(request: NavigationRequest):
     valid_ids = {el.id for el in request.elements}
     max_retries = 2
 
-    # Build the user turn — include previous action context if available
+    # Build the user turn — include full step history to prevent looping
     user_content = f"Goal: {request.goal}"
-    if request.previous_action:
+
+    if request.step_history and len(request.step_history) > 0:
+        history_lines = []
+        for i, step in enumerate(request.step_history, 1):
+            eid = f" on element '{step.element_id}'" if step.element_id else ""
+            history_lines.append(f"  Step {i}: {step.action_type}{eid} — {step.explanation}")
+        user_content += (
+            f"\n\nCOMPLETED STEPS SO FAR (DO NOT REPEAT ANY OF THESE):\n"
+            + "\n".join(history_lines)
+            + "\n\nThe page may have changed after each step. Choose the NEXT step based on what is visible NOW."
+            + f"\nDo NOT select any element_id that was already used: {[s.element_id for s in request.step_history if s.element_id]}"
+        )
+    elif request.previous_action:
         pa = request.previous_action
         user_content += (
             f"\n\nPREVIOUS STEP COMPLETED: I already performed action_type='{pa.action_type}'"
@@ -84,15 +117,26 @@ def get_next_step(request: NavigationRequest):
 
     for attempt in range(max_retries + 1):
         try:
-            print(f"--- Attempt {attempt + 1}: Calling Gemini 2.5 Flash... ---")
+            print(f"--- Attempt {attempt + 1}: Calling Perplexity sonar-pro... ---")
             
-            # Execute completion utilizing Gemini
-            response = client.chat.completions.create(
-                model="gemini-2.5-flash",
-                response_model=NavigationResponse,
+            completion = client.chat.completions.create(
+                model="sonar-pro",
                 messages=messages,
-                temperature=0.0
+                temperature=0.0,
             )
+
+            raw = completion.choices[0].message.content.strip()
+            print(f"--- Raw LLM response: {raw} ---")
+
+            # Strip markdown code fences if present
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+
+            data = json.loads(raw)
+            response = NavigationResponse(**data)
             
             print("--- Success! Received response from LLM ---")
             
@@ -110,19 +154,20 @@ def get_next_step(request: NavigationRequest):
                 f"You must select an absolute match from this valid set: {list(valid_ids)}. Re-evaluate the DOM."
             )
             
-            messages.append({"role": "assistant", "content": response.model_dump_json()})
+            messages.append({"role": "assistant", "content": raw})
             messages.append({"role": "user", "content": error_msg})
             
             print(f"[Warning] Element ID hallucination caught (Attempt {attempt + 1}). Re-routing request...")
 
         except Exception as e:
             error_str = str(e)
-            if "429" in error_str or "Quota exceeded" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+            print(f"\n[CRITICAL API ERROR] {error_str}\n")
+            if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
                 return NavigationResponse(
                     element_id=None,
                     action_type="fail",
                     type_value=None,
-                    explanation="I am currently rate-limited by Google's servers. Please wait 45 seconds and try again!"
+                    explanation=f"Rate-limited by Perplexity API. Please wait a moment and try again. Error: {error_str}"
                 )
             raise HTTPException(
                 status_code=500, 

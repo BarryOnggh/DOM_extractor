@@ -127,7 +127,26 @@
       const sel = el.options[el.selectedIndex];
       return sel ? sel.text : el.getAttribute("aria-label") || "";
     }
-    return (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").substring(0, 120);
+
+    // For buttons/links: try innerText first
+    let text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").substring(0, 120);
+    if (text) return text;
+
+    // Fallback 1: aria-label on the element itself
+    if (el.getAttribute("aria-label")) return el.getAttribute("aria-label").trim();
+
+    // Fallback 2: img[alt] inside the element (e.g. Singpass button with logo image)
+    const img = el.querySelector("img[alt]");
+    if (img && img.alt.trim()) return img.alt.trim();
+
+    // Fallback 3: title attribute
+    if (el.getAttribute("title")) return el.getAttribute("title").trim();
+
+    // Fallback 4: SVG title element inside (for icon-only buttons)
+    const svgTitle = el.querySelector("title");
+    if (svgTitle && svgTitle.textContent.trim()) return svgTitle.textContent.trim();
+
+    return "";
   }
 
   function ensureId(el) {
@@ -138,6 +157,65 @@
     const gaId = `ga-${el.tagName.toLowerCase()}-${idCounter}`;
     el.setAttribute(GA_ID_ATTR, gaId);
     return gaId;
+  }
+
+  function isCloseButton(el) {
+    const label = (el.getAttribute("aria-label") || "").toLowerCase();
+    const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+    const closes = ["close", "dismiss", "×", "x"];
+    if (closes.some(c => label === c || text === c)) return true;
+    if (el.getAttribute("data-close-dialog") !== null) return true;
+    if (el.classList.contains("dialog-close")) return true;
+    return false;
+  }
+
+  // Keywords that indicate a high-priority action
+  const HIGH_PRIORITY_KEYWORDS = [
+    "login", "log in", "sign in", "singpass", "myhdb", "residents",
+    "apply", "submit", "continue", "proceed", "next step", "confirm", "register",
+    "qr", "scan", "app", "mobile app", "hfe"
+  ];
+
+  // Exact phrases that are THE primary action on their page — always shown first
+  const EXACT_PRIMARY_PHRASES = [
+    "log in with singpass",
+    "login with singpass",
+    "sign in with singpass",
+    "scan qr code",
+    "scan with singpass app",
+    "log in",
+    "sign in",
+  ];
+
+  // Keywords that indicate a low-priority / last-resort action
+  const LOW_PRIORITY_KEYWORDS = [
+    "password", "forgot password", "reset password"
+  ];
+
+  function isPrimaryAction(text) {
+    const t = text.toLowerCase();
+    return HIGH_PRIORITY_KEYWORDS.some(k => t.includes(k));
+  }
+
+  function isExactPrimary(text) {
+    const t = text.toLowerCase().trim();
+    return EXACT_PRIMARY_PHRASES.some(p => t === p || t.startsWith(p));
+  }
+
+  function isLowPriority(text) {
+    const t = text.toLowerCase();
+    return LOW_PRIORITY_KEYWORDS.some(k => t.includes(k));
+  }
+
+  function getElementKind(el, isClose) {
+    if (isClose) return "CLOSE BUTTON";
+    const tag = el.tagName;
+    if (tag === "BUTTON" || el.getAttribute("role") === "button") return "BUTTON";
+    if (tag === "A") return "LINK";
+    if (tag === "INPUT") return `INPUT[${el.type || "text"}]`;
+    if (tag === "SELECT") return "SELECT";
+    if (tag === "TEXTAREA") return "TEXTAREA";
+    return "BUTTON";
   }
 
   function scanDOM() {
@@ -152,6 +230,27 @@
       if (el.disabled) return;
       if (isInert(el)) return;
 
+      // Skip links/buttons inside footer — they are never the right next step
+      if (el.closest("footer, [role='contentinfo'], .site-footer")) return;
+
+      // Skip elements that are the CURRENT active tab or page (clicking them does nothing)
+      if (el.getAttribute("aria-current") === "page" || el.getAttribute("aria-selected") === "true") return;
+
+      // Skip carousel/banner navigation arrows
+      if (el.closest(".swiper, .swiper-container, .carousel")) {
+        // If it's a structural arrow inside a carousel, skip it
+        if (el.tagName === "BUTTON" && (!el.innerText || el.innerText.length < 3)) return;
+      }
+      const lowerTextForSkip = (el.innerText || el.getAttribute("aria-label") || el.getAttribute("title") || "").toLowerCase();
+      if (lowerTextForSkip.includes("next slide") || lowerTextForSkip.includes("previous slide") || lowerTextForSkip.includes("carousel")) return;
+
+      // Skip inline text links — <a> tags embedded inside a sentence/paragraph
+      // (e.g. "reset it on the Singpass website ↗"). These are never actionable steps.
+      if (el.tagName === "A") {
+        const parentP = el.closest("p, li");
+        if (parentP && parentP.textContent.trim().length > el.textContent.trim().length + 20) return;
+      }
+
       const text = getElementText(el);
       const ariaLabel = el.getAttribute("aria-label") || "";
       const title = el.getAttribute("title") || "";
@@ -162,24 +261,72 @@
       if (seen.has(id)) return;
       seen.add(id);
 
-      // Compute and cache selector path NOW while we have the element reference
       const path = computeSelectorPath(el);
       const section = getSectionContext(el);
       selectorCache[id] = { path, text: displayText, tag: el.tagName.toLowerCase() };
 
-      const entry = {
-        id,
-        tag: el.tagName.toLowerCase(),
-        text: section ? `[${section}] ${displayText}` : displayText,
-      };
+      const close = isCloseButton(el);
+      const kind = getElementKind(el, close);
+      const isBtn = kind === "BUTTON";
+      const isLink = kind === "LINK";
+      const primary = isPrimaryAction(displayText);
+      const exactPrimary = isExactPrimary(displayText);
+      const lowPri = isLowPriority(displayText);
+
+      // Sort priority:
+      // -1: exact match ("Log in with Singpass", "Scan QR code")
+      //  0: primary action button
+      //  1: primary action link
+      //  2: other button
+      //  3: other link
+      //  4: misc
+      //  5: close button
+      //  6: password/low-priority (always last)
+      let priority = 4;
+      if (lowPri) priority = 6;
+      else if (close) priority = 5;
+      else if (exactPrimary) priority = -1;
+      else if (primary && isBtn) priority = 0;
+      else if (primary && isLink) priority = 1;
+      else if (isBtn) priority = 2;
+      else if (isLink) priority = 3;
+
+      const labeledText = section
+        ? `[${section}] [${kind}] ${displayText}`
+        : `[${kind}] ${displayText}`;
+
+      const entry = { id, tag: el.tagName.toLowerCase(), text: labeledText, _priority: priority };
       if (el.type) entry.type = el.type;
       if (el.placeholder) entry.placeholder = el.placeholder;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+        entry.value = el.value;
+      }
 
       elements.push(entry);
     });
 
-    const trimmed = elements.slice(0, 60);
+    // If this looks like the Singpass login page, inject a synthetic QR code element.
+    // The real QR code is an unclickable canvas/img, so the scanner misses it.
+    // This guarantees the AI sees the QR code option and can instruct the user to scan it.
+    const isSingpassLogin = elements.some(e => e.text.toLowerCase().includes("use password"));
+    if (isSingpassLogin) {
+      elements.push({
+        id: "singpass-qr-synthetic",
+        tag: "img",
+        text: "[QR SCANNER] Scan with Singpass app",
+        _priority: -2 // Absolute highest priority
+      });
+      // Cache a dummy selector so highlight resolution doesn't crash
+      selectorCache["singpass-qr-synthetic"] = { path: "body", text: "QR Code", tag: "img" };
+    }
+
+    // Sort so AI sees the most relevant elements at the top
+    elements.sort((a, b) => a._priority - b._priority);
+    elements.forEach(e => delete e._priority);
+
+    const trimmed = elements.slice(0, 40);
     console.log(`[GovAssist] Scanned ${trimmed.length} elements (context: ${context})`);
+    console.table(trimmed.map(e => ({ id: e.id, text: e.text.substring(0, 80) })));
     return { elements: trimmed, context };
   }
 

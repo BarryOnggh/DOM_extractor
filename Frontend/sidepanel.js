@@ -41,6 +41,7 @@
   let currentGoal = "";
   let stepCount = 0;
   let lastResponse = null; // the previous NavigationResponse, sent as context to the next step
+  let stepHistory = []; // full ordered list of every step taken this session
   let chatLog = []; // [{kind:'user', text}] | [{kind:'note', text}] | [{kind:'step', step, resolved}]
   let currentStatus = "Ready to help";
   let currentTaskBanner = { visible: false, name: "—" };
@@ -105,7 +106,7 @@
    * Call the real backend: scan DOM → POST to API → highlight result.
    * Returns a normalized step object for the UI.
    */
-  async function callBackend(goal, previousAction) {
+  async function callBackend(goal, previousAction, history) {
     // Step 1: Scan the DOM (modal-aware)
     const { elements, url, context } = await scanPageDOM();
 
@@ -118,7 +119,7 @@
       };
     }
 
-    // Step 2: POST to the backend with full context
+    // Step 2: POST to the backend with full context + step history
     const body = {
       goal: goal,
       current_url: url,
@@ -126,6 +127,7 @@
       page_context: context,
     };
     if (previousAction) body.previous_action = previousAction;
+    if (history && history.length > 0) body.step_history = history;
 
     const res = await fetch(`${API_URL}/api/next-step`, {
       method: "POST",
@@ -283,8 +285,12 @@
           <div class="step-progress">Step ${stepNum}</div>
           <div class="step-actions">
             ${
-              resolved || isDone || isFail
+              resolved || isDone
                 ? ""
+                : isFail
+                ? `<button type="button" class="pill-btn primary" data-action="confirm">
+                     Retry
+                   </button>`
                 : `<button type="button" class="pill-btn primary" data-action="confirm">
                      I did this — next step
                    </button>`
@@ -370,7 +376,7 @@
       const previousAction = rawPrev
         ? { element_id: rawPrev.element_id, action_type: rawPrev.action_type, explanation: rawPrev.explanation }
         : null;
-      const response = await callBackend(goal, previousAction);
+      const response = await callBackend(goal, previousAction, stepHistory);
 
       document.getElementById("typingIndicator")?.remove();
       sendBtn.disabled = false;
@@ -398,6 +404,7 @@
         setTaskBanner(false, "—");
         currentGoal = "";
         stepCount = 0;
+        stepHistory = [];
         persistState();
         return;
       }
@@ -415,6 +422,8 @@
 
       // Normal action step — store response so next cycle knows what happened
       lastResponse = response;
+      // Push to full history so AI never repeats a used element
+      stepHistory.push({ element_id: response.element_id, action_type: response.action_type, explanation: response.explanation });
       pushEntry({
         kind: "step",
         step: { ...response, step_number: stepCount },
@@ -438,6 +447,7 @@
     currentGoal = goalText;
     stepCount = 0;
     lastResponse = null; // reset context for a fresh goal
+    stepHistory = []; // reset full history for a fresh goal
     if (!currentTaskBanner.visible) {
       setTaskBanner(true, goalText);
     }

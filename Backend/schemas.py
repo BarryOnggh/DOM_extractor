@@ -24,6 +24,7 @@ class NavigationRequest(BaseModel):
     elements: List[DOMElement]
     page_context: Optional[str] = None          # "modal" or "page"
     previous_action: Optional[PreviousAction] = None  # what happened last step
+    step_history: Optional[List[PreviousAction]] = None  # full history of all steps taken
 
 # --- Response Data (Force LLM to output) ---
 class NavigationResponse(BaseModel):

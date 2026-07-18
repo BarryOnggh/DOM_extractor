@@ -1,7 +1,16 @@
 import json
-from fastapi import FastAPI, HTTPException
+import io
+import sys
+import speech_recognition as sr
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
+
+# Force UTF-8 for console output on Windows to prevent charmap crashes
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 # Import your configurations and schemas
 from config import settings
@@ -181,6 +190,29 @@ def get_next_step(request: NavigationRequest):
         type_value=None,
         explanation="I am having trouble reading this page layout clearly. Try refreshing the page or altering your request."
     )
+
+@app.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...), lang: str = Form("en-US")):
+    """
+    Accepts a WAV audio file from the browser and transcribes it using
+    Google Speech Recognition in the specified language.
+    """
+    print(f"[Backend] Received transcription request. Language: {lang}")
+    recognizer = sr.Recognizer()
+    try:
+        raw = await audio.read()
+        audio_io = io.BytesIO(raw)
+        with sr.AudioFile(audio_io) as source:
+            audio_data = recognizer.record(source)
+        text = recognizer.recognize_google(audio_data, language=lang)
+        return {"text": text}
+    except sr.UnknownValueError:
+        return {"text": "", "error": "no-speech"}
+    except sr.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Speech recognition service error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn

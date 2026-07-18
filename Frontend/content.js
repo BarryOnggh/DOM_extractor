@@ -523,7 +523,53 @@
   // 5. MESSAGE LISTENER
   // =====================================================================
 
+  let activeRecognizer = null;
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === "startVoice") {
+      const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!Speech) {
+        chrome.runtime.sendMessage({ type: "VOICE_RESULT", error: "not-supported" });
+        sendResponse({ success: false });
+        return false;
+      }
+      try {
+        if (activeRecognizer) activeRecognizer.stop();
+        const recognizer = new Speech();
+        activeRecognizer = recognizer;
+        recognizer.lang = "en-US";
+        recognizer.continuous = false;
+        recognizer.interimResults = false;
+        
+        let hasSentResult = false;
+        recognizer.onresult = (e) => {
+          hasSentResult = true;
+          chrome.runtime.sendMessage({ type: "VOICE_RESULT", text: e.results[0][0].transcript });
+        };
+        recognizer.onerror = (e) => {
+          hasSentResult = true;
+          chrome.runtime.sendMessage({ type: "VOICE_RESULT", error: e.error });
+        };
+        recognizer.onend = () => {
+          if (!hasSentResult) {
+            chrome.runtime.sendMessage({ type: "VOICE_RESULT", error: "no-speech" });
+          }
+        };
+        recognizer.start();
+        sendResponse({ success: true });
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "VOICE_RESULT", error: e.message });
+        sendResponse({ success: false });
+      }
+      return false;
+    }
+
+    if (message.action === "stopVoice") {
+      if (activeRecognizer) activeRecognizer.stop();
+      sendResponse({ success: true });
+      return false;
+    }
+
     if (message.action === "scanDOM") {
       const { elements, context } = scanDOM();
       sendResponse({ success: true, elements, context, url: window.location.href });
@@ -534,6 +580,32 @@
       highlightElement(message.element_id, message.action_type, message.type_value)
         .then(ok => sendResponse({ success: ok }));
       return true; // async response
+    }
+
+    if (message.action === "autoClick") {
+      // Auto-press mode: resolve the element and click/type it programmatically
+      scanDOM(); // refresh cache
+      const el = resolveElement(message.element_id);
+      if (!el) {
+        sendResponse({ success: false, reason: "Element not found" });
+        return false;
+      }
+      try {
+        if (message.action_type === "type" && message.type_value) {
+          el.focus();
+          el.value = message.type_value;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        } else {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.click();
+        }
+        sendResponse({ success: true });
+      } catch (err) {
+        console.error("[GovAssist] autoClick error:", err);
+        sendResponse({ success: false, reason: err.message });
+      }
+      return false;
     }
 
     if (message.action === "clearHighlight") {

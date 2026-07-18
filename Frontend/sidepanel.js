@@ -25,17 +25,22 @@
   const emptyState = document.getElementById("emptyState");
   const taskBanner = document.getElementById("taskBanner");
   const taskName = document.getElementById("taskName");
+  const changeTaskBtn = document.getElementById("changeTaskBtn");
   const composerForm = document.getElementById("composerForm");
   const goalInput = document.getElementById("goalInput");
   const sendBtn = document.getElementById("sendBtn");
   const micBtn = document.getElementById("micBtn");
   const langBtn = document.getElementById("langBtn");
+  const langDropdown = document.getElementById("langDropdown");
+  const langDropdownWrap = document.getElementById("langDropdownWrap");
   const attachBtn = document.getElementById("attachBtn");
   const themeBtn = document.getElementById("themeBtn");
   const themeIconSun = document.getElementById("themeIconSun");
   const themeIconMoon = document.getElementById("themeIconMoon");
   const composerHint = document.getElementById("composerHint");
   const statusLabel = document.getElementById("statusLabel");
+  const autoPressToggle = document.getElementById("autoPressToggle");
+  const autoPressLabel = document.getElementById("autoPressLabel");
 
   // ---- Conversation state ---------------------------------------------------
   let currentGoal = "";
@@ -45,23 +50,48 @@
   let chatLog = []; // [{kind:'user', text}] | [{kind:'note', text}] | [{kind:'step', step, resolved}]
   let currentStatus = "Ready to help";
   let currentTaskBanner = { visible: false, name: "—" };
+  let autoPress = false;
+  let selectedLang = "en"; // dialect code for TTS
 
   // ==========================================================================
   // Backend + Content Script Communication
   // ==========================================================================
 
-  /**
-   * Send a message to the content script in the active tab.
-   */
+  // ---- Content Script Communication ---------------------------------------------
   async function sendToContentScript(message) {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) throw new Error("No active tab found");
-    return chrome.tabs.sendMessage(tab.id, message);
+    // 1. First try the current window (where the sidepanel is attached)
+    let tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    let tab = tabs.find(t => t.url && !t.url.startsWith("chrome://") && !t.url.startsWith("chrome-extension://"));
+
+    // 2. Fallback to last focused window if the sidepanel isn't considered the current window
+    if (!tab) {
+      tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      tab = tabs.find(t => t.url && !t.url.startsWith("chrome://") && !t.url.startsWith("chrome-extension://"));
+    }
+    
+    // 3. Fallback to ANY active window if the above fail
+    if (!tab) {
+      tabs = await chrome.tabs.query({ active: true });
+      tab = tabs.find(t => t.url && !t.url.startsWith("chrome://") && !t.url.startsWith("chrome-extension://"));
+    }
+
+    if (!tab) {
+      // If we only found invalid tabs, throw INVALID_URL
+      const allActive = await chrome.tabs.query({ active: true });
+      if (allActive.length > 0) throw new Error("INVALID_URL");
+      throw new Error("No active tab found");
+    }
+
+    try {
+      return await chrome.tabs.sendMessage(tab.id, message);
+    } catch (err) {
+      if (err.message.includes("Receiving end does not exist") || err.message.includes("context invalidated")) {
+        throw new Error("EXTENSION_RELOADED");
+      }
+      throw err;
+    }
   }
 
-  /**
-   * Scan the active tab's DOM for interactive elements.
-   */
   async function scanPageDOM() {
     try {
       const response = await sendToContentScript({ action: "scanDOM" });
@@ -70,6 +100,12 @@
       }
     } catch (err) {
       console.error("[GovAssist] DOM scan failed:", err);
+      if (err.message === "EXTENSION_RELOADED") {
+        return { elements: [], url: "", context: "EXTENSION_RELOADED" };
+      }
+      if (err.message === "INVALID_URL") {
+        return { elements: [], url: "", context: "INVALID_URL" };
+      }
     }
     return { elements: [], url: "", context: "page" };
   }
@@ -111,10 +147,16 @@
     const { elements, url, context } = await scanPageDOM();
 
     if (elements.length === 0) {
+      let explanation = "I can't read this page yet. Please make sure you're on a website and try again.";
+      if (context === "EXTENSION_RELOADED") {
+        explanation = "The extension was just updated. Please **refresh the webpage** (F5) so I can reconnect to it.";
+      } else if (context === "INVALID_URL") {
+        explanation = "I cannot read Chrome settings pages. Please navigate to a normal website (like the HDB portal) and try again.";
+      }
       return {
         action_type: "fail",
         element_id: null,
-        explanation: "I can't read this page yet. Please make sure you're on a website and try again.",
+        explanation: explanation,
         type_value: null,
       };
     }
@@ -185,6 +227,8 @@
           stepCount,
           status: currentStatus,
           taskBanner: currentTaskBanner,
+          autoPress,
+          selectedLang,
         },
       });
     } catch (error) {
@@ -243,7 +287,7 @@
     const wrap = document.createElement("div");
     wrap.className = "msg msg-assistant";
     wrap.innerHTML = `
-      <div class="assistant-label"><span class="assistant-avatar">AI</span> Assistant</div>
+      <div class="assistant-label"><span class="assistant-avatar">AI</span> ${t("assistantLabel")}</div>
       <div class="assistant-text">${escapeHtml(text)}</div>
     `;
     chatThread.appendChild(wrap);
@@ -260,21 +304,21 @@
 
     // Choose icon based on action type
     let actionIcon = "👆";
-    let actionLabel = "Click the element";
+    let actionLabel = t("actionClick");
     if (step.action_type === "type") {
       actionIcon = "⌨️";
-      actionLabel = "Type in the field";
+      actionLabel = t("actionType");
     } else if (step.action_type === "done") {
       actionIcon = "✅";
-      actionLabel = "Task complete";
+      actionLabel = t("actionComplete");
     } else if (step.action_type === "fail") {
       actionIcon = "⚠️";
-      actionLabel = "Couldn't proceed";
+      actionLabel = t("actionFail");
     }
 
     // Build the step card
     wrap.innerHTML = `
-      <div class="assistant-label"><span class="assistant-avatar">AI</span> Assistant</div>
+      <div class="assistant-label"><span class="assistant-avatar">AI</span> ${t("assistantLabel")}</div>
       <div class="step-card ${resolved || isDone ? "is-done" : ""} ${isFail ? "is-fail" : ""}">
         <div class="step-number">${isFail ? "!" : stepNum}</div>
         <div class="step-body">
@@ -282,20 +326,20 @@
           <div class="step-detail">${escapeHtml(step.explanation)}</div>
           ${step.element_id ? `<div class="step-target">Target: <code>${escapeHtml(step.element_id)}</code></div>` : ""}
           ${step.type_value ? `<div class="step-target">Value: <code>${escapeHtml(step.type_value)}</code></div>` : ""}
-          <div class="step-progress">Step ${stepNum}</div>
+          <div class="step-progress">${t("stepLabel")} ${stepNum}</div>
           <div class="step-actions">
             ${
               resolved || isDone
                 ? ""
                 : isFail
                 ? `<button type="button" class="pill-btn primary" data-action="confirm">
-                     Retry
+                     ${t("btnRetry")}
                    </button>`
                 : `<button type="button" class="pill-btn primary" data-action="confirm">
-                     I did this — next step
+                     ${t("btnNext")}
                    </button>`
             }
-            <button type="button" class="pill-btn" data-action="read-aloud">🔊 Read aloud</button>
+            <button type="button" class="pill-btn" data-action="read-aloud">🔊 ${t("btnRead")}</button>
           </div>
         </div>
       </div>
@@ -413,7 +457,7 @@
         pushEntry({
           kind: "step",
           step: { ...response, step_number: stepCount },
-          resolved: true,
+          resolved: false,
         });
         setStatus("Ready to help");
         stepCount--;
@@ -424,12 +468,39 @@
       lastResponse = response;
       // Push to full history so AI never repeats a used element
       stepHistory.push({ element_id: response.element_id, action_type: response.action_type, explanation: response.explanation });
-      pushEntry({
-        kind: "step",
-        step: { ...response, step_number: stepCount },
-        resolved: false,
-      });
-      setStatus("Waiting on you");
+
+      if (autoPress && response.element_id !== "singpass-qr-synthetic") {
+        // Auto-press mode: show the step as done, auto-execute, then continue
+        pushEntry({
+          kind: "step",
+          step: { ...response, step_number: stepCount },
+          resolved: true,
+        });
+        setStatus("Auto-pressing…");
+
+        // Execute the action on the page
+        try {
+          await sendToContentScript({
+            action: "autoClick",
+            element_id: response.element_id,
+            action_type: response.action_type,
+            type_value: response.type_value,
+          });
+        } catch (err) {
+          console.warn("[GovAssist] Auto-click failed:", err);
+        }
+
+        // Wait 2 seconds so user can see what happened, then auto-continue
+        await new Promise(r => setTimeout(r, 2000));
+        requestNextStep(null, response);
+      } else {
+        pushEntry({
+          kind: "step",
+          step: { ...response, step_number: stepCount },
+          resolved: false,
+        });
+        setStatus("Waiting on you");
+      }
     } catch (err) {
       document.getElementById("typingIndicator")?.remove();
       sendBtn.disabled = false;
@@ -468,60 +539,113 @@
     chip.addEventListener("click", () => startNewGoal(chip.dataset.goal));
   });
 
-  // ---- Read aloud (Web Speech API — works fully client-side) --------------
+  // ---- Read aloud (Web Speech API — dialect-aware) --------------------------
+  // Map our dialect codes to speechSynthesis lang values
+  const DIALECT_MAP = {
+    "en":           { lang: "en-US",  rate: 0.95 },
+    "zh-CN":        { lang: "zh-CN",  rate: 0.9 },
+    "zh-HK":        { lang: "zh-HK",  rate: 0.9 },
+    "zh-CN-hokkien":{ lang: "zh-CN",  rate: 0.85 }, // Hokkien fallback to Mandarin voice
+    "ms":           { lang: "ms-MY",  rate: 0.9 },
+    "ta":           { lang: "ta-IN",  rate: 0.85 },
+  };
+
+  function findVoiceForLang(langCode) {
+    const voices = window.speechSynthesis.getVoices();
+    // Try exact match first
+    let voice = voices.find(v => v.lang === langCode);
+    if (voice) return voice;
+    // Try prefix match (e.g. "zh" matches "zh-CN")
+    const prefix = langCode.split("-")[0];
+    voice = voices.find(v => v.lang.startsWith(prefix));
+    return voice || null;
+  }
+
   function readAloud(text) {
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
+    const dialect = DIALECT_MAP[selectedLang] || DIALECT_MAP["en"];
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
+    utterance.rate = dialect.rate;
+    utterance.lang = dialect.lang;
+    const voice = findVoiceForLang(dialect.lang);
+    if (voice) utterance.voice = voice;
     window.speechSynthesis.speak(utterance);
   }
 
-  // ---- Mic input (Web Speech API, progressive enhancement) ---------------
-  const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognizer = null;
+  // Pre-load voices (some browsers load them async)
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+    window.speechSynthesis.getVoices();
+  }
+
+  // ---- Mic input (opens dedicated voice tab — the only approach that works
+  //      reliably in Chrome extension side panels) --------------------------
   let isListening = false;
+  let micTabId = null;
+  let originalTabId = null;
 
-  if (SpeechRecognitionImpl) {
-    recognizer = new SpeechRecognitionImpl();
-    recognizer.continuous = false;
-    recognizer.interimResults = false;
-    recognizer.lang = "en-US";
-
-    recognizer.addEventListener("result", (event) => {
-      const transcript = event.results[0][0].transcript;
-      goalInput.value = transcript;
-    });
-    recognizer.addEventListener("end", () => {
+  micBtn.addEventListener("click", async () => {
+    if (isListening) {
+      // Close the mic tab if user cancels
+      if (micTabId !== null) {
+        try { await chrome.tabs.remove(micTabId); } catch {}
+        micTabId = null;
+      }
       isListening = false;
       micBtn.classList.remove("is-listening");
       micBtn.setAttribute("aria-pressed", "false");
       composerHint.textContent = "Tap the blue mic button to speak naturally";
-    });
-    recognizer.addEventListener("error", () => {
-      isListening = false;
-      micBtn.classList.remove("is-listening");
-      micBtn.setAttribute("aria-pressed", "false");
-      composerHint.textContent = "Didn't catch that — try typing instead, or tap the mic to retry.";
-    });
-  } else {
-    micBtn.title = "Voice input isn't supported in this browser yet";
-  }
+      return;
+    }
 
-  micBtn.addEventListener("click", () => {
-    if (!recognizer) {
-      composerHint.textContent = "Voice input isn't supported in this browser yet — please type instead.";
-      return;
-    }
-    if (isListening) {
-      recognizer.stop();
-      return;
-    }
     isListening = true;
     micBtn.classList.add("is-listening");
     micBtn.setAttribute("aria-pressed", "true");
-    composerHint.textContent = "Listening… speak now";
-    recognizer.start();
+    composerHint.textContent = "Speak in the tab that just opened…";
+
+    try {
+      const [currTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (currTab) originalTabId = currTab.id;
+
+      const tab = await chrome.tabs.create({
+        url: chrome.runtime.getURL("mic_permission.html") + `?lang=${encodeURIComponent(selectedLang)}`,
+        active: true,
+      });
+      micTabId = tab.id;
+    } catch (err) {
+      isListening = false;
+      micBtn.classList.remove("is-listening");
+      micBtn.setAttribute("aria-pressed", "false");
+      composerHint.textContent = "Could not open voice tab.";
+    }
+  });
+
+  // Voice results come back from mic_permission.js via chrome.runtime.sendMessage
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === "VOICE_RESULT") {
+      if (originalTabId !== null) {
+        chrome.tabs.update(originalTabId, { active: true }).catch(() => {});
+        originalTabId = null;
+      }
+
+      isListening = false;
+      micTabId = null;
+      micBtn.classList.remove("is-listening");
+      micBtn.setAttribute("aria-pressed", "false");
+
+      if (msg.text) {
+        goalInput.value = msg.text;
+        composerHint.textContent = "Tap send or press Enter to start";
+        goalInput.focus();
+      } else if (msg.error === "not-allowed") {
+        composerHint.textContent = "Microphone blocked — allow it in the tab that opened.";
+      } else if (msg.error === "no-speech") {
+        composerHint.textContent = "No speech detected — tap the mic and try again.";
+      } else {
+        composerHint.textContent = "Didn't catch that — tap the mic to retry.";
+      }
+    }
   });
 
   // ---- Attach button (placeholder only) --
@@ -532,16 +656,143 @@
     }, 1800);
   });
 
-  // ---- Language toggle (placeholder — cycles a label only) ----------------
-  const LANGS = ["EN", "中文", "Melayu", "தமிழ்"];
-  let langIndex = 0;
-  langBtn.addEventListener("click", () => {
-    langIndex = (langIndex + 1) % LANGS.length;
-    langBtn.title = `Language: ${LANGS[langIndex]} (placeholder — real translation not wired up yet)`;
-    composerHint.textContent = `Language set to ${LANGS[langIndex]} (placeholder)`;
-    setTimeout(() => {
-      composerHint.textContent = "Tap the blue mic button to speak naturally";
-    }, 1800);
+  // ---- Dialect voice dropdown & UI Localization ------------------------------
+  const UI_STRINGS = {
+    "en": {
+      statusReady: "Ready to help", statusWaiting: "Waiting on you", statusThinking: "Thinking…", statusSpeaking: "Speaking…",
+      taskEyebrow: "CURRENT TASK", emptyState: "Tell me what you'd like to do, and I'll walk you through it one step at a time.",
+      inputPlaceholder: "Type or speak here…", sendBtn: "Send",
+      hintMic: "Tap the blue mic button to speak naturally", hintSend: "Tap send or press Enter to start",
+      assistantLabel: "Assistant", actionClick: "Click the element", actionType: "Type in the field", 
+      actionComplete: "Task complete", actionFail: "Couldn't proceed",
+      btnNext: "I did this — next step", btnRetry: "Retry", btnRead: "Read aloud", stepLabel: "Step"
+    },
+    "zh-CN": {
+      statusReady: "准备就绪", statusWaiting: "等待您的操作", statusThinking: "思考中…", statusSpeaking: "朗读中…",
+      taskEyebrow: "当前任务", emptyState: "告诉我您想做什么，我将一步一步引导您完成。",
+      inputPlaceholder: "在此输入或说话…", sendBtn: "发送",
+      hintMic: "点击蓝色麦克风按钮自然说话", hintSend: "点击发送或按回车键开始",
+      assistantLabel: "助手", actionClick: "点击元素", actionType: "输入文本", 
+      actionComplete: "任务完成", actionFail: "无法继续",
+      btnNext: "已完成 — 下一步", btnRetry: "重试", btnRead: "朗读", stepLabel: "步骤"
+    },
+    "zh-HK": {
+      statusReady: "準備就緒", statusWaiting: "等待您的操作", statusThinking: "思考中…", statusSpeaking: "朗讀中…",
+      taskEyebrow: "當前任務", emptyState: "話畀我知你想做咩，我會一步步引導你。",
+      inputPlaceholder: "喺度輸入或者講嘢…", sendBtn: "發送",
+      hintMic: "點擊藍色咪高峰自然講嘢", hintSend: "點擊發送或按回車開始",
+      assistantLabel: "助手", actionClick: "點擊元素", actionType: "輸入文字", 
+      actionComplete: "任務完成", actionFail: "無法繼續",
+      btnNext: "已完成 — 下一步", btnRetry: "重試", btnRead: "朗讀", stepLabel: "步驟"
+    },
+    "zh-CN-hokkien": {
+      statusReady: "準備就緒", statusWaiting: "等待您的操作", statusThinking: "思考中…", statusSpeaking: "朗讀中…",
+      taskEyebrow: "當前任務", emptyState: "告訴我您想做什麼，我將一步一步引導您完成。",
+      inputPlaceholder: "在此輸入或說話…", sendBtn: "發送",
+      hintMic: "點擊藍色麥克風按鈕自然說話", hintSend: "點擊發送或按回車鍵開始",
+      assistantLabel: "助手", actionClick: "點擊元素", actionType: "輸入文本", 
+      actionComplete: "任務完成", actionFail: "無法繼續",
+      btnNext: "已完成 — 下一步", btnRetry: "重試", btnRead: "朗讀", stepLabel: "步驟"
+    },
+    "ms": {
+      statusReady: "Sedia membantu", statusWaiting: "Menunggu anda", statusThinking: "Sedang berfikir…", statusSpeaking: "Bercakap…",
+      taskEyebrow: "TUGASAN SEMASA", emptyState: "Beritahu saya apa yang anda ingin lakukan, saya akan membimbing anda selangkah demi selangkah.",
+      inputPlaceholder: "Taip atau bercakap di sini…", sendBtn: "Hantar",
+      hintMic: "Tekan butang mikrofon biru untuk bercakap", hintSend: "Tekan hantar atau Enter untuk mula",
+      assistantLabel: "Pembantu", actionClick: "Tekan elemen", actionType: "Taip teks", 
+      actionComplete: "Tugasan selesai", actionFail: "Gagal meneruskan",
+      btnNext: "Saya dah buat — seterusnya", btnRetry: "Cuba lagi", btnRead: "Baca kuat", stepLabel: "Langkah"
+    },
+    "ta": {
+      statusReady: "உதவ தயார்", statusWaiting: "காத்திருக்கிறது", statusThinking: "சிந்திக்கிறது…", statusSpeaking: "பேசுகிறது…",
+      taskEyebrow: "தற்போதைய பணி", emptyState: "நீங்கள் என்ன செய்ய விரும்புகிறீர்கள் என்று சொல்லுங்கள், நான் உங்களுக்கு வழிகாட்டுகிறேன்.",
+      inputPlaceholder: "இங்கே தட்டச்சு செய்யவும் அல்லது பேசவும்…", sendBtn: "அனுப்பு",
+      hintMic: "பேச நீல மைக் பட்டனை அழுத்தவும்", hintSend: "தொடங்க அனுப்பு அல்லது Enter ஐ அழுத்தவும்",
+      assistantLabel: "உதவியாளர்", actionClick: "உறுப்பைக் கிளிக் செய்க", actionType: "உரையை உள்ளிடவும்", 
+      actionComplete: "பணி முடிந்தது", actionFail: "தொடர முடியவில்லை",
+      btnNext: "செய்துவிட்டேன் — அடுத்த படி", btnRetry: "மீண்டும் முயற்சி செய்", btnRead: "படித்து காட்டு", stepLabel: "படி"
+    }
+  };
+
+  function t(key) {
+    const langObj = UI_STRINGS[selectedLang] || UI_STRINGS["en"];
+    return langObj[key] || UI_STRINGS["en"][key];
+  }
+
+  function updateDialectUI() {
+    document.querySelectorAll(".lang-option").forEach(btn => {
+      btn.classList.toggle("is-active", btn.dataset.lang === selectedLang);
+    });
+    
+    const activeOpt = document.querySelector(`.lang-option[data-lang="${selectedLang}"]`);
+    const label = activeOpt ? activeOpt.dataset.label : "English";
+    
+    // Update header button label
+    const labelSpan = document.getElementById("currentLangLabel");
+    if (labelSpan) labelSpan.textContent = activeOpt ? activeOpt.textContent : "🇬🇧 English";
+
+    // Update global static texts
+    const eyebrow = document.querySelector(".task-eyebrow");
+    if (eyebrow) {
+      eyebrow.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg> ${t("taskEyebrow")}`;
+    }
+    document.querySelector(".empty-state p").textContent = t("emptyState");
+    document.getElementById("goalInput").placeholder = t("inputPlaceholder");
+    document.getElementById("sendBtn").textContent = t("sendBtn");
+
+    // Reset composer hint
+    composerHint.textContent = t("hintMic");
+    
+    // Re-apply current status text
+    if (document.getElementById("statusLabel").textContent === UI_STRINGS["en"].statusReady || 
+        document.getElementById("statusLabel").textContent === UI_STRINGS["zh-CN"].statusReady) {
+      setStatus(t("statusReady"));
+    } else if (document.getElementById("statusLabel").textContent === UI_STRINGS["en"].statusWaiting ||
+               document.getElementById("statusLabel").textContent === UI_STRINGS["zh-CN"].statusWaiting) {
+      setStatus(t("statusWaiting"));
+    }
+  }
+
+  langBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    langDropdown.hidden = !langDropdown.hidden;
+  });
+
+  document.querySelectorAll(".lang-option").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      selectedLang = btn.dataset.lang;
+      langDropdown.hidden = true;
+      updateDialectUI();
+      persistState();
+      try { await chrome.storage.local.set({ dialectPreference: selectedLang }); } catch {}
+    });
+  });
+
+  // Close dropdown when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!langDropdownWrap.contains(e.target)) langDropdown.hidden = true;
+  });
+
+  // ---- Change Task button ----------------------------------------------------
+  changeTaskBtn.addEventListener("click", async () => {
+    currentGoal = "";
+    stepCount = 0;
+    lastResponse = null;
+    stepHistory = [];
+    setTaskBanner(false, "—");
+    await clearPageHighlight();
+    window.speechSynthesis?.cancel();
+    pushEntry({ kind: "note", text: "Task cancelled. What would you like to do next?" });
+    setStatus("Ready to help");
+    persistState();
+  });
+
+  // ---- Auto-press toggle -----------------------------------------------------
+  autoPressToggle.addEventListener("change", async () => {
+    autoPress = autoPressToggle.checked;
+    autoPressLabel.textContent = autoPress ? "Auto ✓" : "Auto";
+    persistState();
+    try { await chrome.storage.local.set({ autoPressPreference: autoPress }); } catch {}
   });
 
   // ---- Theme (light/dark), auto-detected from system + manual override ----
@@ -592,6 +843,22 @@
   // ---- Boot ---------------------------------------------------------------
   async function boot() {
     initTheme();
+
+    // Restore dialect preference
+    try {
+      const { dialectPreference } = await chrome.storage.local.get("dialectPreference");
+      if (dialectPreference) selectedLang = dialectPreference;
+    } catch {}
+    updateDialectUI();
+
+    // Restore auto-press preference
+    try {
+      const { autoPressPreference } = await chrome.storage.local.get("autoPressPreference");
+      if (autoPressPreference != null) autoPress = autoPressPreference;
+    } catch {}
+    autoPressToggle.checked = autoPress;
+    autoPressLabel.textContent = autoPress ? "Auto ✓" : "Auto";
+
     const saved = await loadPersistedState();
     if (saved && Array.isArray(saved.chatLog) && saved.chatLog.length > 0) {
       chatLog = saved.chatLog;
@@ -599,12 +866,17 @@
       stepCount = saved.stepCount || 0;
       currentStatus = saved.status || "Ready to help";
       currentTaskBanner = saved.taskBanner || { visible: false, name: "—" };
+      if (saved.selectedLang) selectedLang = saved.selectedLang;
+      if (saved.autoPress != null) autoPress = saved.autoPress;
 
       chatLog.forEach(renderEntry);
       scrollToBottom();
       statusLabel.textContent = currentStatus;
       taskName.textContent = currentTaskBanner.name;
       taskBanner.hidden = !currentTaskBanner.visible;
+      autoPressToggle.checked = autoPress;
+      autoPressLabel.textContent = autoPress ? "Auto ✓" : "Auto";
+      updateDialectUI();
     }
   }
 

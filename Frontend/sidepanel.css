@@ -130,6 +130,25 @@ input:focus-visible {
   color: var(--blue-dark);
 }
 
+.lang-picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--blue-border);
+  border-radius: var(--radius-lg);
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--blue-dark);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.lang-picker-btn:hover {
+  background: var(--blue-tint);
+}
+
 /* ===== Task banner ===== */
 .task-banner {
   display: flex;
@@ -572,5 +591,177 @@ html[data-theme="dark"] .step-card.is-fail {
   border-radius: 4px;
   font-size: 11px;
   font-family: "SF Mono", "Fira Code", monospace;
+}
+
+/* ===== Auto-press toggle ===== */
+.auto-press-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toggle-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: #D0D5DD;
+  border-radius: 20px;
+  transition: background 0.2s;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--blue);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+
+/* ===== Language dropdown ===== */
+.lang-dropdown-wrap {
+  position: relative;
+}
+
+.lang-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--panel);
+  border: 1px solid #E3E9F3;
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  z-index: 100;
+  min-width: 200px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  animation: dropIn 0.15s ease-out;
+}
+
+.lang-dropdown[hidden] {
+  display: none !important;
+}
+
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.lang-option {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  transition: background 0.12s;
+  cursor: pointer;
+}
+
+.lang-option:hover {
+  background: var(--blue-tint);
+}
+
+.lang-option.is-active {
+  background: var(--blue-tint-strong);
+  color: var(--blue-dark);
+  font-weight: 700;
+}
+
+/* ===== Change task button ===== */
+.task-banner-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.task-banner-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.change-task-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--blue-border);
+  background: rgba(255,255,255,0.6);
+  color: var(--blue-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+  cursor: pointer;
+}
+
+.change-task-btn:hover {
+  background: #FEE2E2;
+  border-color: #FECACA;
+  color: #DC2626;
+}
+
+/* ===== Dark mode additions ===== */
+html[data-theme="dark"] .toggle-slider {
+  background: #3A4555;
+}
+
+html[data-theme="dark"] .lang-dropdown {
+  background: #141E30;
+  border-color: #223047;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+
+html[data-theme="dark"] .lang-option:hover {
+  background: var(--blue-tint);
+}
+
+html[data-theme="dark"] .change-task-btn {
+  background: rgba(255,255,255,0.08);
+  border-color: var(--blue-border);
+}
+
+html[data-theme="dark"] .change-task-btn:hover {
+  background: rgba(220,38,38,0.2);
+  border-color: rgba(220,38,38,0.4);
+  color: #FCA5A5;
 }
 

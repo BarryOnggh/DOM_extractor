@@ -3,7 +3,7 @@
   "name": "GovAssist \u2014 AI Navigation Assistant",
   "version": "0.2.0",
   "description": "Walks you through government website tasks one step at a time.",
-  "permissions": ["sidePanel", "activeTab", "scripting", "storage", "tabs"],
+  "permissions": ["sidePanel", "activeTab", "scripting", "storage", "tabs", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "Open GovAssist"

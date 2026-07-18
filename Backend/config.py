@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # 1. Define your variables and their expected types
     perplexity_api_key: str
+    google_speech_api_key: str | None = None
     debug_mode: bool = False
     port: int = 8000
 

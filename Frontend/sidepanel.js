@@ -78,13 +78,19 @@
     if (!tab) {
       // If we only found invalid tabs, throw INVALID_URL
       const allActive = await chrome.tabs.query({ active: true });
+      console.warn("[GovAssist Sidepanel] No valid target tab found. All active tabs:", allActive);
       if (allActive.length > 0) throw new Error("INVALID_URL");
       throw new Error("No active tab found");
     }
 
+    console.log("[GovAssist Sidepanel] Targeting tab ID:", tab.id, "URL:", tab.url, "Title:", tab.title);
+
     try {
-      return await chrome.tabs.sendMessage(tab.id, message);
+      const res = await chrome.tabs.sendMessage(tab.id, message);
+      console.log("[GovAssist Sidepanel] sendMessage success response:", res);
+      return res;
     } catch (err) {
+      console.error("[GovAssist Sidepanel] sendMessage failed with error:", err.message, err);
       if (err.message.includes("Receiving end does not exist") || err.message.includes("context invalidated")) {
         throw new Error("EXTENSION_RELOADED");
       }

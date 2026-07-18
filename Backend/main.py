@@ -204,7 +204,12 @@ async def transcribe_audio(audio: UploadFile = File(...), lang: str = Form("en-U
         audio_io = io.BytesIO(raw)
         with sr.AudioFile(audio_io) as source:
             audio_data = recognizer.record(source)
-        text = recognizer.recognize_google(audio_data, language=lang)
+            
+        kwargs = {"language": lang}
+        if settings.google_speech_api_key and settings.google_speech_api_key != "REPLACE_WITH_YOUR_KEY":
+            kwargs["key"] = settings.google_speech_api_key
+            
+        text = recognizer.recognize_google(audio_data, **kwargs)
         return {"text": text}
     except sr.UnknownValueError:
         return {"text": "", "error": "no-speech"}

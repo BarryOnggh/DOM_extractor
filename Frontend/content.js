@@ -12,6 +12,7 @@
 
 (function () {
   "use strict";
+  console.log("[GovAssist Content Script] Injected and active on:", window.location.href);
 
   const GA_ID_ATTR = "data-ga-id";
   const HIGHLIGHT_CLASS = "govassist-highlight-overlay";

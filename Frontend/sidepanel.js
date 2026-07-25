@@ -242,6 +242,22 @@
     }
   }
 
+  function resolveAllSteps() {
+    // Mark all steps in state as resolved
+    chatLog.forEach(entry => {
+      if (entry.kind === "step") {
+        entry.resolved = true;
+      }
+    });
+    // Remove all confirm buttons from the DOM
+    chatThread.querySelectorAll('[data-action="confirm"]').forEach(btn => {
+      const card = btn.closest(".step-card");
+      if (card) card.classList.add("is-done");
+      btn.remove();
+    });
+    persistState();
+  }
+
   async function loadPersistedState() {
     try {
       const { chatState } = await sessionGet("chatState");
@@ -444,6 +460,7 @@
 
       // Handle terminal states
       if (response.action_type === "done") {
+        resolveAllSteps();
         pushEntry({
           kind: "step",
           step: { ...response, step_number: stepCount },
@@ -781,6 +798,7 @@
 
   // ---- Change Task button ----------------------------------------------------
   changeTaskBtn.addEventListener("click", async () => {
+    resolveAllSteps();
     currentGoal = "";
     stepCount = 0;
     lastResponse = null;

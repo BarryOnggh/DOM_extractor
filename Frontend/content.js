@@ -219,6 +219,44 @@
     return "BUTTON";
   }
 
+  const BLOCKED_TEXT_PATTERNS = [
+    "see more", "next advisory", "previous advisory",
+    "next slide", "previous slide", "carousel", "back to top",
+    "›", "‹", "1 of 5", "2 of 5", "3 of 5", "1 of 3", "2 of 3"
+  ];
+
+  function isBlockedElement(el) {
+    // 1. Aggressive fuzzy-match for banner/advisory ancestors
+    let curr = el;
+    while (curr && curr !== document.body && curr !== document.documentElement) {
+      const cls = (typeof curr.className === 'string') ? curr.className.toLowerCase() : '';
+      const id = (curr.id || '').toLowerCase();
+      
+      // If any parent container looks like an advisory, banner, or masthead, block EVERYTHING inside it.
+      if (
+        cls.includes('advisory') || cls.includes('banner') || cls.includes('masthead') || cls.includes('alert') || cls.includes('notice') || cls.includes('notification') ||
+        id.includes('advisory') || id.includes('banner') || id.includes('masthead') || id.includes('alert') || id.includes('notice') || id.includes('notification')
+      ) {
+        return true;
+      }
+      curr = curr.parentElement;
+    }
+
+    // 2. Exact text pattern blocks
+    const t = (el.innerText || el.getAttribute("aria-label") || el.getAttribute("title") || "").toLowerCase().trim();
+    if (BLOCKED_TEXT_PATTERNS.some(p => t === p || t.includes(p))) return true;
+
+    // 3. Carousel arrow buttons
+    if (el.closest(".swiper, .swiper-container, .carousel")) {
+      if (el.tagName === "BUTTON" && (!el.innerText || el.innerText.trim().length < 3)) return true;
+    }
+    
+    // 4. Site footers
+    if (el.closest("footer, [role='contentinfo'], .site-footer")) return true;
+
+    return false;
+  }
+
   function scanDOM() {
     const modal = getOpenModal();
     const root = modal || document;
@@ -230,23 +268,17 @@
       if (!isVisible(el)) return;
       if (el.disabled) return;
       if (isInert(el)) return;
+      if (isBlockedElement(el)) return;
 
-      // Skip links/buttons inside footer — they are never the right next step
-      if (el.closest("footer, [role='contentinfo'], .site-footer")) return;
+      // Skip current-page indicators
+      if (
+        el.getAttribute("aria-current") === "page" ||
+        el.getAttribute("aria-selected") === "true" ||
+        (el.classList.contains("active") && el.tagName === "A")
+      ) return;
+      if (el.tagName === "A" && el.href === window.location.href) return;
 
-      // Skip elements that are the CURRENT active tab or page (clicking them does nothing)
-      if (el.getAttribute("aria-current") === "page" || el.getAttribute("aria-selected") === "true") return;
-
-      // Skip carousel/banner navigation arrows
-      if (el.closest(".swiper, .swiper-container, .carousel")) {
-        // If it's a structural arrow inside a carousel, skip it
-        if (el.tagName === "BUTTON" && (!el.innerText || el.innerText.length < 3)) return;
-      }
-      const lowerTextForSkip = (el.innerText || el.getAttribute("aria-label") || el.getAttribute("title") || "").toLowerCase();
-      if (lowerTextForSkip.includes("next slide") || lowerTextForSkip.includes("previous slide") || lowerTextForSkip.includes("carousel")) return;
-
-      // Skip inline text links — <a> tags embedded inside a sentence/paragraph
-      // (e.g. "reset it on the Singpass website ↗"). These are never actionable steps.
+      // Skip inline text links embedded inside paragraphs
       if (el.tagName === "A") {
         const parentP = el.closest("p, li");
         if (parentP && parentP.textContent.trim().length > el.textContent.trim().length + 20) return;
@@ -274,23 +306,17 @@
       const exactPrimary = isExactPrimary(displayText);
       const lowPri = isLowPriority(displayText);
 
-      // Sort priority:
-      // -1: exact match ("Log in with Singpass", "Scan QR code")
-      //  0: primary action button
-      //  1: primary action link
-      //  2: other button
-      //  3: other link
-      //  4: misc
-      //  5: close button
-      //  6: password/low-priority (always last)
-      let priority = 4;
-      if (lowPri) priority = 6;
-      else if (close) priority = 5;
+      // Priority: lower = shown first to AI
+      let priority = 5;
+      const isNavMenu = el.closest(".primary-nav, .primary-inner, #primary-links, nav[aria-label='Main navigation']");
+
+      if (lowPri) priority = 7;
+      else if (close) priority = 6;
       else if (exactPrimary) priority = -1;
       else if (primary && isBtn) priority = 0;
       else if (primary && isLink) priority = 1;
-      else if (isBtn) priority = 2;
-      else if (isLink) priority = 3;
+      else if (isNavMenu && isLink) priority = 2;
+      else if (isBtn) priority = 4;
 
       const labeledText = section
         ? `[${section}] [${kind}] ${displayText}`
@@ -306,22 +332,18 @@
       elements.push(entry);
     });
 
-    // If this looks like the Singpass login page, inject a synthetic QR code element.
-    // The real QR code is an unclickable canvas/img, so the scanner misses it.
-    // This guarantees the AI sees the QR code option and can instruct the user to scan it.
+    // Singpass QR code injection
     const isSingpassLogin = elements.some(e => e.text.toLowerCase().includes("use password"));
     if (isSingpassLogin) {
       elements.push({
         id: "singpass-qr-synthetic",
         tag: "img",
         text: "[QR SCANNER] Scan with Singpass app",
-        _priority: -2 // Absolute highest priority
+        _priority: -2
       });
-      // Cache a dummy selector so highlight resolution doesn't crash
       selectorCache["singpass-qr-synthetic"] = { path: "body", text: "QR Code", tag: "img" };
     }
 
-    // Sort so AI sees the most relevant elements at the top
     elements.sort((a, b) => a._priority - b._priority);
     elements.forEach(e => delete e._priority);
 
@@ -329,6 +351,7 @@
     console.log(`[GovAssist] Scanned ${trimmed.length} elements (context: ${context})`);
     console.table(trimmed.map(e => ({ id: e.id, text: e.text.substring(0, 80) })));
     return { elements: trimmed, context };
+
   }
 
   // =====================================================================
@@ -445,7 +468,7 @@
     document.querySelectorAll(`.${HIGHLIGHT_CLASS},.${TOOLTIP_CLASS}`).forEach(e => e.remove());
   }
 
-  function drawOverlay(el, actionType) {
+  function drawOverlay(el, actionType, typeValue) {
     const PAD = 5;
     const container = getOpenModal() || document.body;
 
@@ -456,7 +479,7 @@
     const tooltip = document.createElement("div");
     tooltip.className = TOOLTIP_CLASS;
     tooltip.textContent =
-      actionType === "type"  ? "⌨️ Type here"  :
+      actionType === "type"  ? (typeValue ? `⌨️ Type: "${typeValue}"` : "⌨️ Type here") :
       actionType === "click" ? "👆 Click here"  : "👀 Look here";
     container.appendChild(tooltip);
 
@@ -508,7 +531,7 @@
     await new Promise(r => setTimeout(r, 600));
 
     // If element moved off screen during scroll, re-check
-    drawOverlay(el, actionType);
+    drawOverlay(el, actionType, typeValue);
 
     // For type actions, focus and pre-fill
     if (actionType === "type" && typeValue) {

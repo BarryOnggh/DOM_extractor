@@ -330,9 +330,6 @@
         <div class="step-body">
           <div class="step-title">${actionIcon} ${escapeHtml(actionLabel)}</div>
           <div class="step-detail">${escapeHtml(step.explanation)}</div>
-          ${step.element_id ? `<div class="step-target">Target: <code>${escapeHtml(step.element_id)}</code></div>` : ""}
-          ${step.type_value ? `<div class="step-target">Value: <code>${escapeHtml(step.type_value)}</code></div>` : ""}
-          <div class="step-progress">${t("stepLabel")} ${stepNum}</div>
           <div class="step-actions">
             ${
               resolved || isDone

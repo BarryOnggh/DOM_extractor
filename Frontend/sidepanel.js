@@ -310,13 +310,13 @@
 
     // Choose icon based on action type
     let actionIcon = "👆";
-    let actionLabel = t("actionClick");
+    let actionLabel = step.title || t("actionClick");
     if (step.action_type === "type") {
       actionIcon = "⌨️";
-      actionLabel = t("actionType");
+      actionLabel = step.title || t("actionType");
     } else if (step.action_type === "done") {
       actionIcon = "✅";
-      actionLabel = t("actionComplete");
+      actionLabel = step.title || t("actionComplete");
     } else if (step.action_type === "fail") {
       actionIcon = "⚠️";
       actionLabel = t("actionFail");

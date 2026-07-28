@@ -75,7 +75,11 @@ RULES:
 
 8. FAIL GRACEFULLY: Only set action_type to "fail" if NO element in the list can advance the goal at all (or for the Singpass QR rule above).
 
-9. EMPATHY & SIMPLICITY: Write the "explanation" as one short, plain sentence for an elderly user — no jargon. (e.g., "I will click the Login button for you.")
+9. EMPATHY & SIMPLICITY: Write "explanation" as one short, plain, IMPERATIVE instruction for an elderly user — tell them what to do, don't narrate your own intent. No jargon.
+   GOOD: "Click the HDB Flat Portal button to continue."
+   BAD: "I will open the HDB Flat Portal where you can continue your application."
+
+9b. TITLE: Write "title" as a 3-6 word imperative summary of the action, naming the actual thing being interacted with (e.g. "Open the HDB Flat Portal", "Log in with Singpass", "Enter your NRIC number") — never a generic phrase like "Click the element".
 
 10. FILL FORMS FIRST: If there are empty text inputs on the page (like NRIC, Name, Phone), you MUST fill them out using action_type "type" and type_value BEFORE clicking "Next" or "Submit". Do not skip empty fields!
 
@@ -88,6 +92,7 @@ You MUST respond with ONLY valid JSON matching this exact schema — no extra te
   "element_id": "<string or null>",
   "action_type": "<click|type|scroll|done|fail>",
   "type_value": "<string or null>",
+  "title": "<string>",
   "explanation": "<string>"
 }}"""
 

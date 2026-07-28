@@ -16,6 +16,7 @@ class DOMElement(BaseModel):
 class PreviousAction(BaseModel):
     element_id: Optional[str] = None
     action_type: str
+    title: Optional[str] = None
     explanation: str
 
 class NavigationRequest(BaseModel):
@@ -35,6 +36,9 @@ class NavigationResponse(BaseModel):
     type_value: Optional[str] = Field(
         default=None, 
         description="The string to enter, ONLY if action_type is 'type'."
+    )
+    title: str = Field(
+        description="A short 3-6 word imperative summary of the action, naming the actual element/page (e.g. 'Open the HDB Flat Portal')."
     )
     explanation: str = Field(
         description="A simple, one-sentence explanation for the elderly user."

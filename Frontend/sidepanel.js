@@ -583,13 +583,13 @@
 
     // Choose icon based on action type
     let actionIcon = "👆";
-    let actionLabel = t("actionClick");
+    let actionLabel = step.title || t("actionClick");
     if (step.action_type === "type") {
       actionIcon = "⌨️";
-      actionLabel = t("actionType");
+      actionLabel = step.title || t("actionType");
     } else if (step.action_type === "done") {
       actionIcon = "✅";
-      actionLabel = t("actionComplete");
+      actionLabel = step.title || t("actionComplete");
     } else if (step.action_type === "fail") {
       actionIcon = "⚠️";
       actionLabel = t("actionFail");
@@ -603,9 +603,6 @@
         <div class="step-body">
           <div class="step-title">${actionIcon} ${escapeHtml(actionLabel)}</div>
           <div class="step-detail">${escapeHtml(step.explanation)}</div>
-          ${step.element_id ? `<div class="step-target">Target: <code>${escapeHtml(step.element_id)}</code></div>` : ""}
-          ${step.type_value ? `<div class="step-target">Value: <code>${escapeHtml(step.type_value)}</code></div>` : ""}
-          <div class="step-progress">${t("stepLabel")} ${stepNum}</div>
           <div class="step-actions">
             ${
               resolved || isDone

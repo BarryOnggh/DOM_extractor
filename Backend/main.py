@@ -108,6 +108,7 @@ Return ONLY valid JSON. No markdown, no explanation text outside the JSON:
   "element_id": "<string or null>",
   "action_type": "<click|type|done|fail>",
   "type_value": "<string or null>",
+  "title": "<string>",
   "explanation": "<string>"
 }}"""
 

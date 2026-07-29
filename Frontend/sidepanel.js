@@ -698,6 +698,12 @@
         : null;
       const response = await callBackend(goal, previousAction, stepHistory);
 
+      if (!currentGoal) {
+        document.getElementById("typingIndicator")?.remove();
+        sendBtn.disabled = false;
+        return; // Aborted
+      }
+
       document.getElementById("typingIndicator")?.remove();
       sendBtn.disabled = false;
 
@@ -803,6 +809,7 @@
 
         // Wait 2 seconds so user can see what happened, then auto-continue
         await new Promise(r => setTimeout(r, 2000));
+        if (!currentGoal) return;
         requestNextStep(null, response);
       } else {
         pushEntry({

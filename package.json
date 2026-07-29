@@ -1,0 +1,15 @@
+{
+  "name": "govassist-extension",
+  "version": "0.3.0",
+  "private": true,
+  "description": "GovAssist browser extension and local verification suite",
+  "scripts": {
+    "test": "node --test Tests/*.test.js",
+    "lint": "node scripts/verify-build.js --lint",
+    "typecheck": "node scripts/verify-build.js --typecheck",
+    "build": "node scripts/verify-build.js --build"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

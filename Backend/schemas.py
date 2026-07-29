@@ -12,6 +12,42 @@ class DOMElement(BaseModel):
     type: Optional[str] = None
     placeholder: Optional[str] = None
     disabled: Optional[bool] = False
+    sensitive_kind: Optional[
+        Literal["password", "otp", "payment", "banking", "government_id", "document_upload", "email"]
+    ] = None
+
+class PageTarget(BaseModel):
+    text: str
+    targetType: str
+    id: Optional[str] = None
+
+class PageField(BaseModel):
+    type: str
+    label: str = ""
+    classification: str = "none"
+    dataKind: str = "generic_text"
+    disabled: bool = False
+
+class PageForm(BaseModel):
+    type: str
+    labels: List[str] = Field(default_factory=list)
+    fields: List[PageField] = Field(default_factory=list)
+
+class PageSummary(BaseModel):
+    url: str
+    hostname: str
+    route: str
+    title: str = ""
+    description: str = ""
+    headings: List[str] = Field(default_factory=list)
+    navigation: List[PageTarget] = Field(default_factory=list)
+    buttons: List[PageTarget] = Field(default_factory=list)
+    links: List[PageTarget] = Field(default_factory=list)
+    forms: List[PageForm] = Field(default_factory=list)
+    breadcrumbs: List[str] = Field(default_factory=list)
+    ariaLabels: List[str] = Field(default_factory=list)
+    visibleText: List[str] = Field(default_factory=list)
+    pageCategory: str = "unknown"
 
 class PreviousAction(BaseModel):
     element_id: Optional[str] = None
@@ -23,6 +59,7 @@ class NavigationRequest(BaseModel):
     current_url: str
     elements: List[DOMElement]
     page_context: Optional[str] = None          # "modal" or "page"
+    page_summary: Optional[PageSummary] = None
     previous_action: Optional[PreviousAction] = None  # what happened last step
     step_history: Optional[List[PreviousAction]] = None  # full history of all steps taken
 
@@ -39,3 +76,20 @@ class NavigationResponse(BaseModel):
     explanation: str = Field(
         description="A simple, one-sentence explanation for the elderly user."
     )
+
+class SuggestedAction(BaseModel):
+    id: str
+    label: str
+    intent: str
+    targetType: Literal["link", "button", "form", "section", "navigation", "explanation"]
+    targetText: Optional[str] = None
+    targetSelector: Optional[str] = None
+    confidence: float = Field(ge=0, le=1)
+    reason: Optional[str] = None
+
+class SuggestionRequest(BaseModel):
+    page_context: PageSummary
+    language: str = "en"
+
+class SuggestionResponse(BaseModel):
+    suggestions: List[SuggestedAction]

@@ -19,6 +19,8 @@
   "use strict";
 
   const API_URL = "http://127.0.0.1:8000";
+  const PageAnalysis = globalThis.GovAssistPageAnalysis;
+  const Suggestions = globalThis.GovAssistSuggestions;
 
   // ---- DOM references ------------------------------------------------------
   const chatThread = document.getElementById("chatThread");
@@ -41,6 +43,28 @@
   const statusLabel = document.getElementById("statusLabel");
   const autoPressToggle = document.getElementById("autoPressToggle");
   const autoPressLabel = document.getElementById("autoPressLabel");
+  const suggestionRow = document.getElementById("suggestionRow");
+  const trustIndicator = document.getElementById("trustIndicator");
+  const trustSummaryBtn = document.getElementById("trustSummaryBtn");
+  const trustDetails = document.getElementById("trustDetails");
+  const trustEyebrow = document.getElementById("trustEyebrow");
+  const trustLevel = document.getElementById("trustLevel");
+  const trustConfidence = document.getElementById("trustConfidence");
+  const trustExplanation = document.getElementById("trustExplanation");
+  const trustSignals = document.getElementById("trustSignals");
+  const trustRecommendation = document.getElementById("trustRecommendation");
+  const trustReadBtn = document.getElementById("trustReadBtn");
+  const trustIcon = document.getElementById("trustIcon");
+  const securityModeToggle = document.getElementById("securityModeToggle");
+  const securityModeTitle = document.getElementById("securityModeTitle");
+  const securityModeLabel = document.getElementById("securityModeLabel");
+  const actionWarning = document.getElementById("actionWarning");
+  const actionWarningTitle = document.getElementById("actionWarningTitle");
+  const actionWarningReason = document.getElementById("actionWarningReason");
+  const actionWarningRecommendation = document.getElementById("actionWarningRecommendation");
+  const actionWarningReadBtn = document.getElementById("actionWarningReadBtn");
+  const actionWarningBackBtn = document.getElementById("actionWarningBackBtn");
+  const actionWarningContinueBtn = document.getElementById("actionWarningContinueBtn");
 
   // ---- Conversation state ---------------------------------------------------
   let currentGoal = "";
@@ -51,7 +75,27 @@
   let currentStatus = "Ready to help";
   let currentTaskBanner = { visible: false, name: "—" };
   let autoPress = false;
+  let securityModeEnabled = true;
   let selectedLang = "en"; // dialect code for TTS
+  let currentPageAnalysis = null;
+  let currentSuggestions = [];
+  let currentActionAssessment = null;
+  let featureRefreshTimer = null;
+  let featureRequestGeneration = 0;
+  const ORIGINAL_SUGGESTIONS = [
+    {
+      id: "original-housing-grant",
+      label: "Apply for housing grant",
+      intent: "I want to apply for a housing grant",
+      reason: "Original GovAssist housing-grant shortcut.",
+    },
+    {
+      id: "original-cpf-balance",
+      label: "Check CPF balance",
+      intent: "I want to log in to check my CPF balance",
+      reason: "Original GovAssist CPF-balance shortcut.",
+    },
+  ];
 
   // ==========================================================================
   // Backend + Content Script Communication
@@ -102,18 +146,23 @@
     try {
       const response = await sendToContentScript({ action: "scanDOM" });
       if (response && response.success) {
-        return { elements: response.elements, url: response.url, context: response.context || "page" };
+        return {
+          elements: response.elements,
+          url: response.url,
+          context: response.context || "page",
+          analysis: response.analysis || null,
+        };
       }
     } catch (err) {
       console.error("[GovAssist] DOM scan failed:", err);
       if (err.message === "EXTENSION_RELOADED") {
-        return { elements: [], url: "", context: "EXTENSION_RELOADED" };
+        return { elements: [], url: "", context: "EXTENSION_RELOADED", analysis: null };
       }
       if (err.message === "INVALID_URL") {
-        return { elements: [], url: "", context: "INVALID_URL" };
+        return { elements: [], url: "", context: "INVALID_URL", analysis: null };
       }
     }
-    return { elements: [], url: "", context: "page" };
+    return { elements: [], url: "", context: "page", analysis: null };
   }
 
   /**
@@ -144,20 +193,200 @@
     }
   }
 
+  function riskPresentation(level) {
+    return {
+      Low: { className: "is-low", icon: "✓", key: "riskLow" },
+      Medium: { className: "is-medium", icon: "!", key: "riskMedium" },
+      High: { className: "is-high", icon: "!", key: "riskHigh" },
+      Unknown: { className: "is-unknown", icon: "?", key: "riskUnknown" },
+    }[level] || { className: "is-unknown", icon: "?", key: "riskUnknown" };
+  }
+
+  function updateSecurityModeUI() {
+    securityModeToggle.checked = securityModeEnabled;
+    securityModeToggle.setAttribute("aria-checked", String(securityModeEnabled));
+    securityModeTitle.textContent = securityText("securityMode");
+    securityModeLabel.textContent = securityText(securityModeEnabled ? "securityOn" : "securityOff");
+  }
+
+  function renderSecurityDisabled() {
+    trustIndicator.classList.remove("is-low", "is-medium", "is-high", "is-unknown");
+    trustIndicator.classList.add("is-disabled");
+    trustIcon.textContent = "○";
+    trustEyebrow.textContent = securityText("websiteRisk");
+    trustLevel.textContent = securityText("securityDisabled");
+    trustConfidence.textContent = "—";
+    trustExplanation.textContent = securityText("securityDisabledSummary");
+    trustSignals.replaceChildren();
+    trustRecommendation.textContent = securityText("securityDisabledRecommendation");
+    trustReadBtn.hidden = true;
+  }
+
+  function renderTrustAssessment(assessment) {
+    if (!securityModeEnabled) {
+      renderSecurityDisabled();
+      return;
+    }
+    trustIndicator.classList.remove("is-low", "is-medium", "is-high", "is-unknown", "is-disabled");
+    trustEyebrow.textContent = securityText("websiteRisk");
+    trustReadBtn.hidden = false;
+    if (!assessment) {
+      trustIndicator.classList.add("is-unknown");
+      trustIcon.textContent = "…";
+      trustLevel.textContent = securityText("assessing");
+      trustConfidence.textContent = "—";
+      trustExplanation.textContent = securityText("assessingSummary");
+      trustSignals.replaceChildren();
+      trustRecommendation.textContent = "";
+      return;
+    }
+
+    const presentation = riskPresentation(assessment.riskLevel);
+    trustIndicator.classList.add(presentation.className);
+    trustIcon.textContent = presentation.icon;
+    trustLevel.textContent = securityText(presentation.key);
+    trustConfidence.textContent = securityText("confidence").replace("{score}", assessment.confidenceScore);
+    trustExplanation.textContent = securityText(`summary${assessment.riskLevel}`);
+    trustRecommendation.textContent = securityText(`recommendation${assessment.riskLevel}`);
+    trustReadBtn.textContent = `🔊 ${securityText("readAloud")}`;
+
+    const visibleSignals = (assessment.contributingSignals || [])
+      .filter((item) => ["critical", "warning"].includes(item.status))
+      .slice(0, 5);
+    const fallbackSignals = (assessment.contributingSignals || []).filter((item) => item.status === "unknown").slice(0, 2);
+    trustSignals.replaceChildren();
+    for (const item of (visibleSignals.length ? visibleSignals : fallbackSignals)) {
+      const li = document.createElement("li");
+      li.textContent = localizeSignal(item);
+      trustSignals.appendChild(li);
+    }
+  }
+
+  function localizeSuggestionLabel(label) {
+    if (selectedLang === "en") return label;
+    const common = {
+      "Explain this page": "explainPage",
+      "Show the main sections": "showSections",
+      "Help me navigate this website": "helpNavigate",
+      "Find contact information": "findContact",
+      "Search this website": "searchWebsite",
+      "Search for a product": "searchProduct",
+      "Apply for housing grant": "applyHousingGrant",
+      "Check CPF balance": "checkCpfBalance",
+    };
+    if (common[label]) return securityText(common[label]);
+    const prefixes = [
+      ["Open ", "openPrefix"],
+      ["Find ", "findPrefix"],
+      ["View ", "viewPrefix"],
+      ["Check ", "checkPrefix"],
+    ];
+    const matched = prefixes.find(([prefix]) => label.startsWith(prefix));
+    return matched ? `${securityText(matched[1])}${label.slice(matched[0].length)}` : label;
+  }
+
+  function renderSuggestions(suggestions) {
+    currentSuggestions = suggestions || [];
+    suggestionRow.replaceChildren();
+    suggestionRow.setAttribute("aria-busy", "false");
+    if (!currentSuggestions.length) {
+      const unavailable = document.createElement("span");
+      unavailable.className = "suggestion-loading";
+      unavailable.textContent = securityText("noActions");
+      suggestionRow.appendChild(unavailable);
+      return;
+    }
+
+    for (const suggestion of currentSuggestions) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "suggestion-chip";
+      chip.textContent = localizeSuggestionLabel(suggestion.label);
+      chip.dataset.goal = suggestion.intent;
+      chip.title = suggestion.reason || "";
+      suggestionRow.appendChild(chip);
+    }
+  }
+
+  suggestionRow.addEventListener("click", (event) => {
+    const chip = event.target.closest(".suggestion-chip");
+    if (!chip || !suggestionRow.contains(chip)) return;
+    startNewGoal(chip.dataset.goal, chip.textContent);
+  });
+
+  async function refreshPageFeatures(reason) {
+    renderSuggestions(ORIGINAL_SUGGESTIONS);
+    if (!securityModeEnabled) {
+      renderSecurityDisabled();
+      return;
+    }
+    const generation = ++featureRequestGeneration;
+    renderTrustAssessment(null);
+
+    try {
+      const response = await sendToContentScript({ action: "analysePage", reason });
+      if (
+        !securityModeEnabled ||
+        generation !== featureRequestGeneration ||
+        !response ||
+        !response.success ||
+        !response.analysis
+      ) return;
+      currentPageAnalysis = response.analysis;
+      renderTrustAssessment(currentPageAnalysis.trustAssessment);
+    } catch (error) {
+      if (!securityModeEnabled) return;
+      console.warn("[GovAssist] Page analysis unavailable:", error);
+      currentPageAnalysis = null;
+      renderTrustAssessment(null);
+    }
+  }
+
+  function scheduleFeatureRefresh(reason, delay) {
+    clearTimeout(featureRefreshTimer);
+    if (!securityModeEnabled) return;
+    featureRefreshTimer = setTimeout(() => refreshPageFeatures(reason), delay || 250);
+  }
+
+  function showActionWarning(assessment) {
+    if (!securityModeEnabled || !assessment || !assessment.shouldWarn) return;
+    currentActionAssessment = assessment;
+    actionWarning.hidden = false;
+    actionWarningTitle.textContent = securityText("actionWarningTitle");
+    actionWarningReason.textContent = selectedLang === "en"
+      ? assessment.reason
+      : securityText("actionWarningReason");
+    actionWarningRecommendation.textContent = selectedLang === "en"
+      ? assessment.recommendation
+      : securityText("actionWarningRecommendation");
+    actionWarningReadBtn.textContent = `🔊 ${securityText("readAloud")}`;
+    actionWarningBackBtn.textContent = securityText("goBack");
+    actionWarningContinueBtn.textContent = securityText("continueAnyway");
+  }
+
+  function hideActionWarning() {
+    currentActionAssessment = null;
+    actionWarning.hidden = true;
+  }
+
   /**
    * Call the real backend: scan DOM → POST to API → highlight result.
    * Returns a normalized step object for the UI.
    */
   async function callBackend(goal, previousAction, history) {
     // Step 1: Scan the DOM (modal-aware)
-    const { elements, url, context } = await scanPageDOM();
+    const { elements, url, context, analysis } = await scanPageDOM();
+    if (securityModeEnabled && analysis) {
+      currentPageAnalysis = analysis;
+      renderTrustAssessment(analysis.trustAssessment);
+    }
 
     if (elements.length === 0) {
       let explanation = "I can't read this page yet. Please make sure you're on a website and try again.";
       if (context === "EXTENSION_RELOADED") {
         explanation = "The extension was just updated. Please **refresh the webpage** (F5) so I can reconnect to it.";
       } else if (context === "INVALID_URL") {
-        explanation = "I cannot read Chrome settings pages. Please navigate to a normal website (like the HDB portal) and try again.";
+        explanation = "I cannot read browser settings pages. Please navigate to a normal website and try again.";
       }
       return {
         action_type: "fail",
@@ -169,10 +398,11 @@
 
     // Step 2: POST to the backend with full context + step history
     const body = {
-      goal: goal,
+      goal: PageAnalysis.redactSensitiveText(goal, 500),
       current_url: url,
       elements: elements,
       page_context: context,
+      page_summary: securityModeEnabled && analysis ? analysis.pageContext : null,
     };
     if (previousAction) body.previous_action = previousAction;
     if (history && history.length > 0) body.step_history = history;
@@ -195,6 +425,33 @@
     }
 
     const data = await res.json();
+    const validActionTypes = new Set(["click", "type", "done", "fail"]);
+    const responseIsValid =
+      data &&
+      validActionTypes.has(data.action_type) &&
+      typeof data.explanation === "string" &&
+      (data.element_id === null || data.element_id === undefined || typeof data.element_id === "string") &&
+      (data.type_value === null || data.type_value === undefined || typeof data.type_value === "string");
+    if (!responseIsValid) {
+      console.error("[GovAssist] Rejected invalid navigation response:", data);
+      return {
+        action_type: "fail",
+        element_id: null,
+        explanation: "The assistant returned an unexpected response. Please try again.",
+        type_value: null,
+      };
+    }
+    if (data.action_type === "type") {
+      const target = elements.find((element) => element.id === data.element_id);
+      if (target && target.sensitive_kind) {
+        return {
+          action_type: "fail",
+          element_id: null,
+          explanation: "For your privacy, I will not enter sensitive information. I can guide you to the field, but you must complete it yourself.",
+          type_value: null,
+        };
+      }
+    }
 
     // Step 3: Highlight the target element on the page
     if (data.element_id && data.action_type !== "done" && data.action_type !== "fail") {
@@ -493,6 +750,31 @@
       stepHistory.push({ element_id: response.element_id, action_type: response.action_type, explanation: response.explanation });
 
       if (autoPress && response.element_id !== "singpass-qr-synthetic") {
+        // Preflight the exact action before marking it complete. Sensitive
+        // actions remain manual even when auto-press is enabled.
+        try {
+          const preflight = await sendToContentScript({
+            action: "evaluateAction",
+            element_id: response.element_id,
+          });
+          if (preflight && preflight.assessment && preflight.assessment.shouldWarn) {
+            showActionWarning(preflight.assessment);
+            pushEntry({
+              kind: "step",
+              step: { ...response, step_number: stepCount },
+              resolved: false,
+            });
+            pushEntry({
+              kind: "note",
+              text: "I paused auto-press because this action involves sensitive information. Please review the caution and continue manually if appropriate.",
+            });
+            setStatus("Waiting on you");
+            return;
+          }
+        } catch (error) {
+          console.info("[GovAssist] Action preflight unavailable; content script will enforce it:", error.message);
+        }
+
         // Auto-press mode: show the step as done, auto-execute, then continue
         pushEntry({
           kind: "step",
@@ -503,12 +785,21 @@
 
         // Execute the action on the page
         try {
-          await sendToContentScript({
+          const execution = await sendToContentScript({
             action: "autoClick",
             element_id: response.element_id,
             action_type: response.action_type,
             type_value: response.type_value,
           });
+          if (execution && execution.requiresUserAction) {
+            showActionWarning(execution.assessment);
+            pushEntry({
+              kind: "note",
+              text: "I paused auto-press because this action involves sensitive information. Please review the caution and continue manually if appropriate.",
+            });
+            setStatus("Waiting on you");
+            return;
+          }
         } catch (err) {
           console.warn("[GovAssist] Auto-click failed:", err);
         }
@@ -537,15 +828,15 @@
     }
   }
 
-  function startNewGoal(goalText) {
+  function startNewGoal(goalText, displayText) {
     currentGoal = goalText;
     stepCount = 0;
     lastResponse = null; // reset context for a fresh goal
     stepHistory = []; // reset full history for a fresh goal
     if (!currentTaskBanner.visible) {
-      setTaskBanner(true, goalText);
+      setTaskBanner(true, displayText || goalText);
     }
-    pushEntry({ kind: "user", text: goalText });
+    pushEntry({ kind: "user", text: displayText || goalText });
     requestNextStep(goalText);
   }
 
@@ -556,10 +847,6 @@
     if (!text) return;
     goalInput.value = "";
     startNewGoal(text);
-  });
-
-  document.querySelectorAll(".suggestion-chip").forEach((chip) => {
-    chip.addEventListener("click", () => startNewGoal(chip.dataset.goal));
   });
 
   // ---- Read aloud (Web Speech API — dialect-aware) --------------------------
@@ -668,6 +955,51 @@
       } else {
         composerHint.textContent = "Didn't catch that — tap the mic to retry.";
       }
+    } else if (msg.type === "PAGE_ANALYSIS_INVALIDATED") {
+      if (securityModeEnabled) scheduleFeatureRefresh(msg.reason || "page-change", 300);
+    } else if (msg.type === "SENSITIVE_ACTION_WARNING") {
+      if (securityModeEnabled) showActionWarning(msg.assessment);
+    }
+  });
+
+  chrome.tabs.onActivated.addListener(() => scheduleFeatureRefresh("tab-change", 250));
+  chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+    if (!changeInfo.url && changeInfo.status !== "complete") return;
+    const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (activeTabs[0] && activeTabs[0].id === tabId) {
+      scheduleFeatureRefresh("tab-update", changeInfo.status === "complete" ? 250 : 500);
+    }
+  });
+
+  trustSummaryBtn.addEventListener("click", () => {
+    const expanded = trustSummaryBtn.getAttribute("aria-expanded") === "true";
+    trustSummaryBtn.setAttribute("aria-expanded", String(!expanded));
+    trustDetails.hidden = expanded;
+  });
+
+  trustReadBtn.addEventListener("click", () => {
+    if (!securityModeEnabled || !currentPageAnalysis) return;
+    const assessment = currentPageAnalysis.trustAssessment;
+    readAloud(
+      `${securityText(riskPresentation(assessment.riskLevel).key)}. ` +
+      `${securityText(`summary${assessment.riskLevel}`)} ` +
+      securityText(`recommendation${assessment.riskLevel}`)
+    );
+  });
+
+  actionWarningReadBtn.addEventListener("click", () => {
+    if (!currentActionAssessment) return;
+    readAloud(`${actionWarningReason.textContent} ${actionWarningRecommendation.textContent}`);
+  });
+
+  actionWarningContinueBtn.addEventListener("click", hideActionWarning);
+  actionWarningBackBtn.addEventListener("click", async () => {
+    hideActionWarning();
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tabs[0]) await chrome.tabs.goBack(tabs[0].id);
+    } catch (error) {
+      console.info("[GovAssist] Could not navigate back:", error.message);
     }
   });
 
@@ -737,6 +1069,264 @@
     }
   };
 
+  const SECURITY_EN = {
+    websiteRisk: "Website risk",
+    securityMode: "Security mode",
+    securityOn: "On",
+    securityOff: "Off",
+    securityDisabled: "Security checks off",
+    securityDisabledSummary: "Automatic website security checks are paused.",
+    securityDisabledRecommendation: "Turn Security Mode on when you want this page assessed.",
+    assessing: "Assessing…",
+    assessingSummary: "Collecting local page and URL signals.",
+    riskLow: "Low Risk",
+    riskMedium: "Some Risk Indicators",
+    riskHigh: "High Risk Indicators",
+    riskUnknown: "Unable to Assess",
+    confidence: "Confidence {score}%",
+    summaryLow: "No strong local warning indicators were detected. This is not a guarantee that the website is safe.",
+    summaryMedium: "Some indicators suggest that you should check this website more carefully.",
+    summaryHigh: "Several high-risk indicators were detected on this page.",
+    summaryUnknown: "There is not enough reliable evidence to assess this website confidently.",
+    recommendationLow: "Keep checking the domain and page purpose before sharing sensitive information.",
+    recommendationMedium: "Verify the domain before entering sensitive information or downloading files.",
+    recommendationHigh: "Avoid entering sensitive information. Verify the organisation using its official app or an address you type yourself.",
+    recommendationUnknown: "Use caution and verify the website independently before sharing sensitive information.",
+    readAloud: "Read aloud",
+    findingActions: "Finding useful actions for this page…",
+    noActions: "I found too little page information to suggest a specific action.",
+    actionWarningTitle: "Caution before continuing",
+    actionWarningReason: "This action involves sensitive information and the current page has meaningful risk indicators.",
+    actionWarningRecommendation: "Pause and verify the website through the organisation's official app or web address.",
+    goBack: "Go back",
+    continueAnyway: "Continue anyway",
+    explainPage: "Explain this page",
+    showSections: "Show the main sections",
+    helpNavigate: "Help me navigate this website",
+    findContact: "Find contact information",
+    searchWebsite: "Search this website",
+    searchProduct: "Search for a product",
+    applyHousingGrant: "Apply for housing grant",
+    checkCpfBalance: "Check CPF balance",
+    openPrefix: "Open ",
+    findPrefix: "Find ",
+    viewPrefix: "View ",
+    checkPrefix: "Check ",
+    warningSignal: "Warning indicator",
+    unknownSignal: "Unavailable evidence",
+  };
+
+  const SECURITY_ZH_CN = {
+    websiteRisk: "网站风险",
+    securityMode: "安全模式",
+    securityOn: "开启",
+    securityOff: "关闭",
+    securityDisabled: "安全检查已关闭",
+    securityDisabledSummary: "自动网站安全检查已暂停。",
+    securityDisabledRecommendation: "需要评估此页面时，请开启安全模式。",
+    assessing: "正在评估…",
+    assessingSummary: "正在收集本地网页和网址信号。",
+    riskLow: "低风险",
+    riskMedium: "发现一些风险指标",
+    riskHigh: "发现高风险指标",
+    riskUnknown: "无法评估",
+    confidence: "置信度 {score}%",
+    summaryLow: "未发现明显的本地风险指标，但这并不保证网站安全。",
+    summaryMedium: "部分指标显示您应更仔细地检查此网站。",
+    summaryHigh: "此页面检测到多个高风险指标。",
+    summaryUnknown: "可靠证据不足，无法有把握地评估此网站。",
+    recommendationLow: "分享敏感信息前，请继续核对域名和页面用途。",
+    recommendationMedium: "输入敏感信息或下载文件前，请先核实域名。",
+    recommendationHigh: "请勿输入敏感信息。请使用机构的官方应用或自行输入官方网址核实。",
+    recommendationUnknown: "分享敏感信息前，请谨慎并独立核实网站。",
+    readAloud: "朗读",
+    findingActions: "正在查找适合此页面的操作…",
+    noActions: "页面信息太少，无法建议具体操作。",
+    actionWarningTitle: "继续前请小心",
+    actionWarningReason: "此操作涉及敏感信息，而当前页面有明显的风险指标。",
+    actionWarningRecommendation: "请暂停，并通过机构的官方应用或官方网址核实网站。",
+    goBack: "返回",
+    continueAnyway: "仍然继续",
+    explainPage: "解释此页面",
+    showSections: "显示主要部分",
+    helpNavigate: "帮助我浏览此网站",
+    findContact: "查找联系信息",
+    searchWebsite: "搜索此网站",
+    searchProduct: "搜索商品",
+    applyHousingGrant: "申请住房补助",
+    checkCpfBalance: "查询 CPF 余额",
+    openPrefix: "打开",
+    findPrefix: "查找",
+    viewPrefix: "查看",
+    checkPrefix: "检查",
+    warningSignal: "风险指标",
+    unknownSignal: "无法取得的证据",
+  };
+
+  const SECURITY_ZH_TRAD = {
+    websiteRisk: "網站風險",
+    securityMode: "安全模式",
+    securityOn: "開啟",
+    securityOff: "關閉",
+    securityDisabled: "安全檢查已關閉",
+    securityDisabledSummary: "自動網站安全檢查已暫停。",
+    securityDisabledRecommendation: "需要評估此頁面時，請開啟安全模式。",
+    assessing: "正在評估…",
+    assessingSummary: "正在收集本地網頁和網址訊號。",
+    riskLow: "低風險",
+    riskMedium: "發現一些風險指標",
+    riskHigh: "發現高風險指標",
+    riskUnknown: "無法評估",
+    confidence: "信心分數 {score}%",
+    summaryLow: "未發現明顯的本地風險指標，但這並不保證網站安全。",
+    summaryMedium: "部分指標顯示您應更仔細地檢查此網站。",
+    summaryHigh: "此頁面偵測到多個高風險指標。",
+    summaryUnknown: "可靠證據不足，無法有把握地評估此網站。",
+    recommendationLow: "分享敏感資料前，請繼續核對網域和頁面用途。",
+    recommendationMedium: "輸入敏感資料或下載檔案前，請先核實網域。",
+    recommendationHigh: "請勿輸入敏感資料。請使用機構的官方應用程式或自行輸入官方網址核實。",
+    recommendationUnknown: "分享敏感資料前，請謹慎並獨立核實網站。",
+    readAloud: "朗讀",
+    findingActions: "正在尋找適合此頁面的操作…",
+    noActions: "頁面資料太少，無法建議具體操作。",
+    actionWarningTitle: "繼續前請小心",
+    actionWarningReason: "此操作涉及敏感資料，而目前頁面有明顯的風險指標。",
+    actionWarningRecommendation: "請暫停，並透過機構的官方應用程式或官方網址核實網站。",
+    goBack: "返回",
+    continueAnyway: "仍然繼續",
+    explainPage: "解釋此頁面",
+    showSections: "顯示主要部分",
+    helpNavigate: "幫助我瀏覽此網站",
+    findContact: "尋找聯絡資料",
+    searchWebsite: "搜尋此網站",
+    searchProduct: "搜尋商品",
+    applyHousingGrant: "申請住房補助",
+    checkCpfBalance: "查詢 CPF 餘額",
+    openPrefix: "開啟",
+    findPrefix: "尋找",
+    viewPrefix: "查看",
+    checkPrefix: "檢查",
+    warningSignal: "風險指標",
+    unknownSignal: "無法取得的證據",
+  };
+
+  const SECURITY_MS = {
+    websiteRisk: "Risiko laman web",
+    securityMode: "Mod keselamatan",
+    securityOn: "Hidup",
+    securityOff: "Mati",
+    securityDisabled: "Semakan keselamatan dimatikan",
+    securityDisabledSummary: "Semakan keselamatan laman automatik dihentikan sementara.",
+    securityDisabledRecommendation: "Hidupkan Mod Keselamatan apabila anda mahu halaman ini dinilai.",
+    assessing: "Sedang menilai…",
+    assessingSummary: "Mengumpul isyarat halaman dan URL secara setempat.",
+    riskLow: "Risiko Rendah",
+    riskMedium: "Beberapa Petunjuk Risiko",
+    riskHigh: "Petunjuk Risiko Tinggi",
+    riskUnknown: "Tidak Dapat Dinilai",
+    confidence: "Keyakinan {score}%",
+    summaryLow: "Tiada petunjuk amaran setempat yang kuat dikesan. Ini bukan jaminan bahawa laman web selamat.",
+    summaryMedium: "Beberapa petunjuk menunjukkan bahawa laman web ini perlu diperiksa dengan lebih teliti.",
+    summaryHigh: "Beberapa petunjuk berisiko tinggi dikesan pada halaman ini.",
+    summaryUnknown: "Bukti yang boleh dipercayai tidak mencukupi untuk menilai laman web ini.",
+    recommendationLow: "Semak domain dan tujuan halaman sebelum berkongsi maklumat sensitif.",
+    recommendationMedium: "Sahkan domain sebelum memasukkan maklumat sensitif atau memuat turun fail.",
+    recommendationHigh: "Jangan masukkan maklumat sensitif. Sahkan organisasi melalui aplikasi rasmi atau alamat yang anda taip sendiri.",
+    recommendationUnknown: "Berhati-hati dan sahkan laman web secara bebas sebelum berkongsi maklumat sensitif.",
+    readAloud: "Baca kuat",
+    findingActions: "Mencari tindakan yang berguna untuk halaman ini…",
+    noActions: "Maklumat halaman terlalu sedikit untuk mencadangkan tindakan khusus.",
+    actionWarningTitle: "Berhati-hati sebelum meneruskan",
+    actionWarningReason: "Tindakan ini melibatkan maklumat sensitif dan halaman semasa mempunyai petunjuk risiko yang bermakna.",
+    actionWarningRecommendation: "Berhenti sebentar dan sahkan laman web melalui aplikasi atau alamat rasmi organisasi.",
+    goBack: "Kembali",
+    continueAnyway: "Teruskan juga",
+    explainPage: "Terangkan halaman ini",
+    showSections: "Tunjukkan bahagian utama",
+    helpNavigate: "Bantu saya melayari laman web ini",
+    findContact: "Cari maklumat hubungan",
+    searchWebsite: "Cari dalam laman web ini",
+    searchProduct: "Cari produk",
+    applyHousingGrant: "Mohon geran perumahan",
+    checkCpfBalance: "Semak baki CPF",
+    openPrefix: "Buka ",
+    findPrefix: "Cari ",
+    viewPrefix: "Lihat ",
+    checkPrefix: "Semak ",
+    warningSignal: "Petunjuk amaran",
+    unknownSignal: "Bukti tidak tersedia",
+  };
+
+  const SECURITY_TA = {
+    websiteRisk: "இணையதள ஆபத்து",
+    securityMode: "பாதுகாப்பு முறை",
+    securityOn: "இயக்கு",
+    securityOff: "நிறுத்து",
+    securityDisabled: "பாதுகாப்புச் சோதனை நிறுத்தப்பட்டுள்ளது",
+    securityDisabledSummary: "தானியங்கி இணையதள பாதுகாப்புச் சோதனைகள் இடைநிறுத்தப்பட்டுள்ளன.",
+    securityDisabledRecommendation: "இந்தப் பக்கத்தை மதிப்பிட பாதுகாப்பு முறையை இயக்கவும்.",
+    assessing: "மதிப்பிடுகிறது…",
+    assessingSummary: "பக்க மற்றும் URL அறிகுறிகள் உள்ளூராக சேகரிக்கப்படுகின்றன.",
+    riskLow: "குறைந்த ஆபத்து",
+    riskMedium: "சில ஆபத்து அறிகுறிகள்",
+    riskHigh: "அதிக ஆபத்து அறிகுறிகள்",
+    riskUnknown: "மதிப்பிட முடியவில்லை",
+    confidence: "நம்பிக்கை {score}%",
+    summaryLow: "வலுவான உள்ளூர் எச்சரிக்கை அறிகுறிகள் இல்லை. இது தளம் பாதுகாப்பானது என்பதற்கான உத்தரவாதமல்ல.",
+    summaryMedium: "இந்த இணையதளத்தை மேலும் கவனமாகச் சரிபார்க்க வேண்டிய சில அறிகுறிகள் உள்ளன.",
+    summaryHigh: "இந்தப் பக்கத்தில் பல அதிக ஆபத்து அறிகுறிகள் கண்டறியப்பட்டன.",
+    summaryUnknown: "இந்த இணையதளத்தை நம்பிக்கையுடன் மதிப்பிட போதுமான ஆதாரம் இல்லை.",
+    recommendationLow: "முக்கிய தகவலைப் பகிரும் முன் domain மற்றும் பக்க நோக்கத்தைச் சரிபார்க்கவும்.",
+    recommendationMedium: "முக்கிய தகவலை உள்ளிடும் அல்லது கோப்பைப் பதிவிறக்கும் முன் domain-ஐ உறுதிப்படுத்தவும்.",
+    recommendationHigh: "முக்கிய தகவலை உள்ளிட வேண்டாம். அதிகாரப்பூர்வ செயலி அல்லது நீங்களே தட்டச்சு செய்த முகவரி மூலம் நிறுவனத்தை உறுதிப்படுத்தவும்.",
+    recommendationUnknown: "முக்கிய தகவலைப் பகிரும் முன் எச்சரிக்கையுடன் இணையதளத்தை தனியாகச் சரிபார்க்கவும்.",
+    readAloud: "உரக்கப் படி",
+    findingActions: "இந்தப் பக்கத்திற்கான பயனுள்ள செயல்கள் தேடப்படுகின்றன…",
+    noActions: "குறிப்பிட்ட செயலை பரிந்துரைக்க பக்கத் தகவல் போதவில்லை.",
+    actionWarningTitle: "தொடர்வதற்கு முன் எச்சரிக்கை",
+    actionWarningReason: "இந்தச் செயலில் முக்கிய தகவல் உள்ளது; தற்போதைய பக்கத்தில் பொருத்தமான ஆபத்து அறிகுறிகள் உள்ளன.",
+    actionWarningRecommendation: "நிறுவனத்தின் அதிகாரப்பூர்வ செயலி அல்லது முகவரி மூலம் தளத்தை உறுதிப்படுத்தவும்.",
+    goBack: "திரும்பிச் செல்",
+    continueAnyway: "இருந்தும் தொடரவும்",
+    explainPage: "இந்தப் பக்கத்தை விளக்கு",
+    showSections: "முக்கிய பகுதிகளைக் காட்டு",
+    helpNavigate: "இந்த இணையதளத்தில் வழிகாட்டு",
+    findContact: "தொடர்பு தகவலைக் கண்டுபிடி",
+    searchWebsite: "இந்த இணையதளத்தில் தேடு",
+    searchProduct: "பொருளைத் தேடு",
+    applyHousingGrant: "வீட்டு மானியத்திற்கு விண்ணப்பிக்கவும்",
+    checkCpfBalance: "CPF இருப்பைச் சரிபார்க்கவும்",
+    openPrefix: "திற: ",
+    findPrefix: "கண்டுபிடி: ",
+    viewPrefix: "பார்: ",
+    checkPrefix: "சரிபார்: ",
+    warningSignal: "எச்சரிக்கை அறிகுறி",
+    unknownSignal: "கிடைக்காத ஆதாரம்",
+  };
+
+  const SECURITY_STRINGS = {
+    "en": SECURITY_EN,
+    "zh-CN": SECURITY_ZH_CN,
+    "zh-HK": SECURITY_ZH_TRAD,
+    "zh-CN-hokkien": SECURITY_ZH_TRAD,
+    "ms": SECURITY_MS,
+    "ta": SECURITY_TA,
+  };
+
+  function securityText(key) {
+    const language = SECURITY_STRINGS[selectedLang] || SECURITY_EN;
+    return language[key] || SECURITY_EN[key] || key;
+  }
+
+  function localizeSignal(item) {
+    if (selectedLang === "en") return item.description;
+    const prefix = item.status === "unknown"
+      ? securityText("unknownSignal")
+      : securityText("warningSignal");
+    const evidence = item.evidence ? `: ${item.evidence}` : `: ${item.category}`;
+    return `${prefix}${evidence}`;
+  }
+
   function t(key) {
     const langObj = UI_STRINGS[selectedLang] || UI_STRINGS["en"];
     return langObj[key] || UI_STRINGS["en"][key];
@@ -774,6 +1364,11 @@
                document.getElementById("statusLabel").textContent === UI_STRINGS["zh-CN"].statusWaiting) {
       setStatus(t("statusWaiting"));
     }
+    updateSecurityModeUI();
+    if (!securityModeEnabled) renderSecurityDisabled();
+    else if (currentPageAnalysis) renderTrustAssessment(currentPageAnalysis.trustAssessment);
+    if (currentSuggestions.length) renderSuggestions(currentSuggestions);
+    if (currentActionAssessment) showActionWarning(currentActionAssessment);
   }
 
   langBtn.addEventListener("click", (e) => {
@@ -817,6 +1412,45 @@
     autoPressLabel.textContent = autoPress ? "Auto ✓" : "Auto";
     persistState();
     try { await chrome.storage.local.set({ autoPressPreference: autoPress }); } catch {}
+  });
+
+  async function applySecurityMode(enabled, refreshCurrentPage) {
+    securityModeEnabled = Boolean(enabled);
+    updateSecurityModeUI();
+    clearTimeout(featureRefreshTimer);
+    featureRequestGeneration += 1;
+
+    if (securityModeEnabled) {
+      renderTrustAssessment(null);
+    } else {
+      currentPageAnalysis = null;
+      hideActionWarning();
+      renderSecurityDisabled();
+      renderSuggestions(ORIGINAL_SUGGESTIONS);
+    }
+
+    try {
+      await sendToContentScript({
+        action: "setSecurityMode",
+        enabled: securityModeEnabled,
+      });
+    } catch (error) {
+      console.info("[GovAssist] Security preference will apply when a supported page is active:", error.message);
+    }
+
+    if (securityModeEnabled && refreshCurrentPage) {
+      await refreshPageFeatures("security-enabled");
+    }
+  }
+
+  securityModeToggle.addEventListener("change", async () => {
+    const enabled = securityModeToggle.checked;
+    await applySecurityMode(enabled, enabled);
+    try {
+      await chrome.storage.local.set({ securityModePreference: enabled });
+    } catch (error) {
+      console.error("[GovAssist] couldn't persist Security Mode preference:", error);
+    }
   });
 
   // ---- Theme (light/dark), auto-detected from system + manual override ----
@@ -873,6 +1507,14 @@
       const { dialectPreference } = await chrome.storage.local.get("dialectPreference");
       if (dialectPreference) selectedLang = dialectPreference;
     } catch {}
+
+    // Security Mode defaults to on for existing users and persists across restarts.
+    try {
+      const { securityModePreference } = await chrome.storage.local.get("securityModePreference");
+      securityModeEnabled = securityModePreference !== false;
+    } catch {
+      securityModeEnabled = true;
+    }
     updateDialectUI();
 
     // Restore auto-press preference
@@ -901,6 +1543,12 @@
       autoPressToggle.checked = autoPress;
       autoPressLabel.textContent = autoPress ? "Auto ✓" : "Auto";
       updateDialectUI();
+    }
+    if (securityModeEnabled) {
+      await refreshPageFeatures("boot");
+    } else {
+      renderSecurityDisabled();
+      renderSuggestions(ORIGINAL_SUGGESTIONS);
     }
   }
 

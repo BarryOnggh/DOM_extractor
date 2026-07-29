@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "GovAssist \u2014 AI Navigation Assistant",
-  "version": "0.2.0",
-  "description": "Walks you through government website tasks one step at a time.",
+  "version": "0.3.0",
+  "description": "AI navigation assistance with context-aware actions and advisory website risk checks.",
   "permissions": ["sidePanel", "activeTab", "scripting", "storage", "tabs", "offscreen", "microphone"],
   "host_permissions": ["<all_urls>"],
   "action": {
@@ -17,7 +17,13 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": [
+        "lib/page-analysis.js",
+        "lib/suggestions.js",
+        "lib/trust.js",
+        "lib/action-risk.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

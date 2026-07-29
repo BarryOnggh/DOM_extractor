@@ -1,65 +1,70 @@
-# GovAssist — Extension UI Shell
+# GovAssist browser extension
 
-This is the sidebar UI shell only. It runs entirely against mocked data — no
-dependency on the backend, the DOM-scan content script, or a real mock
-government page.
+This directory contains the active Chromium Manifest V3 extension. The side
+panel uses the content script for bounded page analysis and the FastAPI backend
+for user-initiated navigation. The original HDB and CPF shortcuts are local, and
+the website risk assessment does not require the backend.
 
-Chrome/Edge only (both Chromium, both use the `chrome.sidePanel` API).
+## Features
 
-## What's in scope here
-- Popup/sidebar layout: header, current-task banner, chat thread, step
-  cards, composer with text input + mic
-- A tiny mock "backend" (`mock-data.js`) that returns two canned flows
-  (housing grant, CPF balance check) one step at a time
-- Read-aloud (Web Speech API `speechSynthesis`) and voice input
-  (`SpeechRecognition`) — both work fully client-side, no backend needed
-- Step-through loop: user confirms a step → next step appears, matching the
-  "one step at a time" mechanism in the project brief; task banner resets
-  back to idle once a flow is marked complete
-- The conversation (chat log, current step, task banner) is mirrored to
-  session storage on every change and rehydrated on load, so re-opening the
-  panel picks up where you left off instead of starting blank
-- Light/dark theme: follows the system setting by default, with a manual
-  toggle (sun/moon icon) that overrides it and persists across sessions
-- Attach button and language button are both explicit, labeled placeholders
-  (hover or tap for a tooltip/hint) — no fake functionality behind them
+- Side-panel chatbot, step cards, highlighting, and opt-in auto-press.
+- Original “Apply for housing grant” and “Check CPF balance” quick suggestions.
+- Compact expandable website-risk indicator with separate risk and confidence.
+- Persistent Security Mode toggle for pausing automatic checks and page-load API requests.
+- Advisory sensitive-action warnings that never read field values.
+- Debounced route/DOM observation and fingerprint-based suggestion caching.
+- Read-aloud, voice input, English, Mandarin, Cantonese, Hokkien, Malay, and Tamil.
+- Session-persisted chat state plus light/dark themes.
 
-## How to test it
-1. Open `chrome://extensions` (or `edge://extensions`)
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**, select this folder
-4. Click the GovAssist icon in the toolbar — the side panel opens
-5. **After any code update, click the reload icon on this extensions page**
-   — Chrome caches the old version otherwise
+Chrome and Edge are supported through the `chrome.sidePanel` API.
 
-## The JSON contract
+## Local setup
 
-This is the shape the mock currently returns, and the only thing that
-needs to change when the real backend is wired in — see `callBackend()`
-in `sidepanel.js`.
+1. Open `chrome://extensions` or `edge://extensions`.
+2. Enable Developer mode.
+3. Choose **Load unpacked** and select this directory.
+4. Start the FastAPI backend in `../Backend` when AI navigation/refinement is needed.
+5. Click the GovAssist toolbar icon to open the side panel.
+6. Reload the extension and target web page after extension code changes.
 
-```jsonc
+The trust score and deterministic fallback suggestions do not require the
+backend. Domain age, certificate-chain inspection, and authoritative reputation
+remain unavailable unless a reliable service is configured in the future.
+
+Security Mode is on by default. Turning it off pauses automatic page analysis
+and sensitive-action warnings. Page loads do not POST suggestions to the API;
+AI navigation and voice contact the backend only when the user explicitly
+starts those actions.
+
+## Navigation response
+
+The backend returns a Pydantic-validated navigation step. `sidepanel.js`
+performs a second runtime validation before rendering it.
+
+```json
 {
-  "task_name": "Applying for Housing Grant",
-  "step_index": 1,           // 1-based
-  "total_steps": 3,          // null if unknown until the flow finishes
-  "target": {
-    "data_ai_id": "start-application-btn",  // must match the injected DOM attribute
-    "label": "Start Application button"
-  },
-  "action_type": "click",    // "click" | "input" | "select" | "read"
-  "instruction": "Click the \"Start Application\" button",
-  "explanation": "I've highlighted it on the screen for you.",
-  "done": false
+  "element_id": "visible-element-id",
+  "action_type": "click",
+  "type_value": null,
+  "explanation": "Open the visible course information link."
 }
 ```
 
-If the real response shape ends up different (field names, nesting, etc.),
-only `callBackend()` needs to change — everything else reads from the
-already-normalized `step` object.
+Sensitive fields can be identified by metadata, but field values are never
+collected. The backend and content script both prevent automatic typing into
+sensitive fields.
 
 ## File map
-- `manifest.json` — MV3 config, side panel + background worker
-- `background.js` — opens the docked panel on toolbar icon click
-- `sidepanel.html/css/js` — the UI shell itself
-- `mock-data.js` — canned flows + mock `fetchNextStep()`
+
+- `manifest.json` — MV3 configuration, side panel, content scripts, and worker.
+- `background.js` — opens the docked panel on toolbar-icon click.
+- `content.js` — compact DOM/page extraction, highlighting, navigation observation, and action detection.
+- `sidepanel.html/css/js` — chatbot, suggestions, trust UI, warnings, language, and voice.
+- `lib/page-analysis.js` — sanitisation, page/field classification, URL signals, and fingerprints.
+- `lib/suggestions.js` — local generation, AI validation, target resolution, and cache.
+- `lib/trust.js` — deterministic trust signals, risk, confidence, and explanations.
+- `lib/action-risk.js` — sensitive-action detection and separate action-risk scoring.
+- `mock-data.js` — unused historical prototype retained for reference.
+
+See `../SECURITY_AND_CONTEXT.md` for the scoring model, privacy boundaries,
+verification commands, and current limitations.

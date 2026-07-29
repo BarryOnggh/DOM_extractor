@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>GovAssist</title>
-<link rel="stylesheet" href="sidepanel.css" />
+<link rel="stylesheet" href="sidepanel.css?v=0.3.0" />
 </head>
 <body>
   <div class="app">
@@ -71,13 +71,55 @@
       </div>
     </div>
 
+    <!-- ===== Advisory website trust indicator ===== -->
+    <section class="trust-indicator is-unknown" id="trustIndicator" aria-live="polite">
+      <div class="security-mode-control">
+        <span class="security-mode-title" id="securityModeTitle">Security mode</span>
+        <span class="security-mode-state" id="securityModeLabel">On</span>
+        <label class="toggle-switch" for="securityModeToggle" title="Toggle automatic website security checks">
+          <input type="checkbox" id="securityModeToggle" role="switch" aria-label="Security mode" checked />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <button class="trust-summary" id="trustSummaryBtn" type="button" aria-expanded="false" aria-controls="trustDetails">
+        <span class="trust-icon" id="trustIcon" aria-hidden="true">?</span>
+        <span class="trust-summary-copy">
+          <span class="trust-eyebrow" id="trustEyebrow">Website risk</span>
+          <strong id="trustLevel">Assessing…</strong>
+        </span>
+        <span class="trust-confidence" id="trustConfidence">—</span>
+        <svg class="trust-chevron" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="trust-details" id="trustDetails" hidden>
+        <p class="trust-explanation" id="trustExplanation">Collecting local page and URL signals.</p>
+        <ul class="trust-signals" id="trustSignals"></ul>
+        <p class="trust-recommendation" id="trustRecommendation"></p>
+        <button class="trust-read-btn" id="trustReadBtn" type="button">🔊 Read aloud</button>
+      </div>
+    </section>
+
+    <!-- ===== Contextual sensitive-action advisory ===== -->
+    <section class="action-warning" id="actionWarning" role="alert" hidden>
+      <div class="action-warning-heading">
+        <span aria-hidden="true">!</span>
+        <strong id="actionWarningTitle">Caution before continuing</strong>
+      </div>
+      <p id="actionWarningReason"></p>
+      <p class="action-warning-recommendation" id="actionWarningRecommendation"></p>
+      <div class="action-warning-actions">
+        <button type="button" class="pill-btn" id="actionWarningReadBtn">🔊 Read aloud</button>
+        <button type="button" class="pill-btn" id="actionWarningBackBtn">Go back</button>
+        <button type="button" class="pill-btn primary" id="actionWarningContinueBtn">Continue anyway</button>
+      </div>
+    </section>
+
     <!-- ===== Chat thread ===== -->
     <main class="chat-thread" id="chatThread" aria-live="polite">
       <div class="empty-state" id="emptyState">
         <p>Tell me what you'd like to do, and I'll walk you through it one step at a time.</p>
-        <div class="suggestion-row">
-          <button class="suggestion-chip" data-goal="I need to apply for the new housing grant.">Apply for housing grant</button>
-          <button class="suggestion-chip" data-goal="I want to check my CPF balance.">Check CPF balance</button>
+        <div class="suggestion-row" id="suggestionRow" aria-live="polite" aria-busy="false">
+          <button class="suggestion-chip" type="button" data-goal="I want to apply for a housing grant">Apply for housing grant</button>
+          <button class="suggestion-chip" type="button" data-goal="I want to log in to check my CPF balance">Check CPF balance</button>
         </div>
       </div>
     </main>
@@ -106,6 +148,10 @@
 
   </div>
 
+  <script src="lib/page-analysis.js"></script>
+  <script src="lib/suggestions.js"></script>
+  <script src="lib/trust.js"></script>
+  <script src="lib/action-risk.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

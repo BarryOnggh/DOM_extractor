@@ -1,5 +1,6 @@
 import json
 import io
+import re
 import sys
 import speech_recognition as sr
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -14,7 +15,13 @@ if hasattr(sys.stderr, "reconfigure"):
 
 # Import your configurations and schemas
 from config import settings
-from schemas import NavigationRequest, NavigationResponse
+from schemas import (
+    NavigationRequest,
+    NavigationResponse,
+    SuggestedAction,
+    SuggestionRequest,
+    SuggestionResponse,
+)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -52,7 +59,7 @@ def build_system_prompt(elements: list, page_context: str = "page", current_url:
     if page_context == "modal":
         modal_note = "\nCONTEXT: A dialog/modal is open. The elements below are ONLY from inside that modal. You MUST interact with a modal element."
 
-    return f"""You are a smart, tech-literate adult helping an elderly person navigate a Singapore government website. You think like a human: you read the page, understand where you are, and click the most obvious next link to reach the goal.{modal_note}
+    return f"""You are a careful navigation assistant helping a person navigate the website currently open. Read the visible page controls, understand the page, and choose the clearest safe next step.{modal_note}
 
 CURRENT URL: {current_url}
 
@@ -72,19 +79,20 @@ NEVER DO:
 • Click anything with "advisory", "banner", "carousel", "See more", or slide navigation — these are decorative noise, NEVER relevant.
 • Click "Apply", "Submit", or e-Service buttons when the user only wants to CHECK / READ / FIND information.
 • Click "Login" or "Sign in" unless the user's goal is to access their personal account (e.g., checking their application status). For public information (like checking BTO launches, prices, or eligibility), DO NOT login.
-• Click "Visit HDB Flat Portal" or external portal links when direct navigation links are available on the page.
 • Click in-page anchor tabs (like "Project details" / "Application rates" / "Town map") — these just scroll the same page. If you see these, the user has ARRIVED at the destination. Return "done".
 • Click the Search button or toggle when a direct navigation menu link matching the goal exists.
 • Repeat any element_id already in the COMPLETED STEPS history.
 • Invent an element_id — you may ONLY use IDs from the list above.
+• Enter, invent, request, or repeat passwords, one-time passcodes, payment details, banking details, identity numbers, or document contents.
+• Automatically submit a financial transaction, identity document, sensitive credential, account deletion, or other destructive action.
 
 ALWAYS DO:
 • Choose the single most relevant navigation link that takes you closer to the goal topic.
-• On the homepage, use the TOP NAVIGATION MENU first (e.g., "Buying a Flat", "Managing My Home", "Renting a Flat").
-• On category pages, click the TOPIC CARD that best matches (e.g., "BTO, SBF, and Open Booking of Flats", "Resale Flats").
-• On subcategory pages, click the specific article link (e.g., "Finding a New Flat", "Sales launches").
+• On a homepage, prefer the visible top navigation item that best matches the user's goal.
+• On category pages, choose the visible topic or service card that best matches the goal.
+• On HDB pages, HDB topic links such as "Buying a Flat", "Resale Flats", and "Eligibility" are valid when they match the goal.
 • If a login modal appears, click "Log in with Singpass" or the Singpass QR code. These are valid intermediate steps.
-• If a text input needs filling (NRIC, name, etc.), use action_type "type" with the value in "type_value" BEFORE clicking Submit.
+• Use action_type "type" only for non-sensitive search or navigation text. The user must personally enter all credentials and sensitive information.
 • Write the "explanation" as one short, plain sentence an elderly person can understand.
 
 SEARCH — ABSOLUTE LAST RESORT ONLY:
@@ -106,6 +114,7 @@ Return ONLY valid JSON. No markdown, no explanation text outside the JSON:
 @app.post("/api/next-step", response_model=NavigationResponse)
 def get_next_step(request: NavigationRequest):
     valid_ids = {el.id for el in request.elements}
+    sensitive_ids = {el.id for el in request.elements if el.sensitive_kind}
     max_retries = 2
 
     # Build the user turn — include full step history to prevent looping
@@ -166,14 +175,23 @@ def get_next_step(request: NavigationRequest):
                 return response
                 
             # Condition B: Valid targeted element
-            if response.element_id in valid_ids:
+            if response.element_id in valid_ids and not (
+                response.action_type == "type" and response.element_id in sensitive_ids
+            ):
                 return response
                 
             # Condition C: Hallucination detected.
-            error_msg = (
-                f"ERROR: You selected element_id '{response.element_id}', but that ID does not exist on this page. "
-                f"You must select an absolute match from this valid set: {list(valid_ids)}. Re-evaluate the DOM."
-            )
+            if response.action_type == "type" and response.element_id in sensitive_ids:
+                error_msg = (
+                    "ERROR: You selected a sensitive input. Never type passwords, OTPs, payment details, "
+                    "banking details, identity information, or document contents. Choose a safe navigation "
+                    "step or explain that the user must complete the field personally."
+                )
+            else:
+                error_msg = (
+                    f"ERROR: You selected element_id '{response.element_id}', but that ID does not exist on this page. "
+                    f"You must select an absolute match from this valid set: {list(valid_ids)}. Re-evaluate the DOM."
+                )
             
             messages.append({"role": "assistant", "content": raw})
             messages.append({"role": "user", "content": error_msg})
@@ -202,6 +220,119 @@ def get_next_step(request: NavigationRequest):
         type_value=None,
         explanation="I am having trouble reading this page layout clearly. Try refreshing the page or altering your request."
     )
+
+def _extract_json(raw: str) -> dict:
+    text = raw.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        text = parts[1] if len(parts) > 1 else text
+        if text.lstrip().startswith("json"):
+            text = text.lstrip()[4:]
+    return json.loads(text.strip())
+
+def _normalise_target_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", value or "").strip().casefold()
+
+@app.post("/api/suggestions", response_model=SuggestionResponse)
+def generate_suggestions(request: SuggestionRequest):
+    """
+    Optionally refine locally generated actions. The side panel validates the
+    result again and uses deterministic local suggestions if this is unavailable.
+    """
+    context = request.page_context
+    safe_context = context.model_dump(exclude_none=True)
+    available_targets = [*context.navigation, *context.links, *context.buttons]
+    valid_target_texts = {
+        _normalise_target_text(target.text): target
+        for target in available_targets
+        if target.text.strip()
+    }
+    language_names = {
+        "en": "English",
+        "zh-CN": "Simplified Chinese",
+        "zh-HK": "Traditional Chinese with Cantonese-friendly wording",
+        "zh-CN-hokkien": "Traditional Chinese with simple Hokkien-friendly wording",
+        "ms": "Malay",
+        "ta": "Tamil",
+    }
+    output_language = language_names.get(request.language, "English")
+    prompt = f"""Generate 3 to 5 concise navigation suggestions for the current page.
+
+PAGE SUMMARY (sanitised; it contains no form values or raw HTML):
+{json.dumps(safe_context, ensure_ascii=False, indent=2)}
+
+Rules:
+- Write labels in {output_language}. Keep domains, URLs, company names, and numbers unchanged.
+- Every suggestion must be supported by the page summary.
+- For link, button, or navigation targets, targetText must exactly match visible target text.
+- If there is no exact target, use targetType "explanation" and omit targetText.
+- Do not suggest entering, providing, submitting, uploading, or confirming passwords, OTPs,
+  payment/banking details, identity documents, personal documents, crypto, or transactions.
+- A login suggestion may navigate to a visible login page but must not enter credentials.
+- Avoid destructive actions, duplicates, invented features, and unsupported claims.
+- confidence is a number from 0 to 1. Direct targets require confidence >= 0.7.
+- Return only JSON with this shape:
+{{
+  "suggestions": [
+    {{
+      "id": "short-stable-id",
+      "label": "short user-facing label",
+      "intent": "safe chatbot navigation request",
+      "targetType": "link|button|form|section|navigation|explanation",
+      "targetText": "exact visible text or null",
+      "confidence": 0.0,
+      "reason": "brief evidence"
+    }}
+  ]
+}}"""
+
+    try:
+        completion = client.chat.completions.create(
+            model="sonar-pro",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Generate conservative, evidence-based website navigation suggestions as strict JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+        )
+        parsed = _extract_json(completion.choices[0].message.content)
+        raw_suggestions = parsed.get("suggestions", [])
+        checked: list[SuggestedAction] = []
+        seen_labels: set[str] = set()
+        forbidden = re.compile(
+            r"\b(enter|submit|provide|upload|confirm|send|share|type)\b.{0,40}"
+            r"\b(password|otp|passcode|credit card|cvv|bank|identity|nric|passport|crypto|transaction)\b",
+            re.IGNORECASE,
+        )
+
+        for raw_item in raw_suggestions[:8]:
+            item = SuggestedAction(**raw_item)
+            label_key = item.label.strip().casefold()
+            if not label_key or label_key in seen_labels or forbidden.search(f"{item.label} {item.intent}"):
+                continue
+            if item.targetType in {"link", "button", "navigation"}:
+                target = valid_target_texts.get(_normalise_target_text(item.targetText))
+                if not target or item.confidence < 0.7:
+                    item.targetType = "explanation"
+                    item.targetText = None
+                    item.targetSelector = None
+                    item.confidence = min(item.confidence, 0.69)
+                else:
+                    item.targetText = target.text
+            seen_labels.add(label_key)
+            checked.append(item)
+            if len(checked) == 5:
+                break
+
+        if len(checked) < 2:
+            raise ValueError("The model did not return enough valid suggestions.")
+        return SuggestionResponse(suggestions=checked)
+    except Exception as error:
+        print(f"[Suggestions] AI refinement unavailable: {error}")
+        raise HTTPException(status_code=503, detail="Context suggestion refinement is unavailable.")
 
 @app.post("/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...), lang: str = Form("en-US")):
